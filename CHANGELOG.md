@@ -4,6 +4,78 @@ All notable changes are documented here by sprint.
 
 ---
 
+## [Sprint 1 — Phase 2] — 2026-05-04 — Backup Engine Foundations: HTTP Client, Project Discovery & JSM Detection
+
+### Added
+
+#### Workload JiraHttpClient — `src/workload/http/JiraHttpClient.ts`
+- Concrete implementation of `IJiraHttpClient` (defined in `src/workload/backup/types.ts`)
+  for use by the backup engine.
+- `getJson<T>` — authenticated GET with optional query parameters; retries once on HTTP 401
+  using the rotating-refresh-token mechanism inherited from the credential store.
+- `searchJql` — `POST /rest/api/3/search/jql` exclusive Issue enumeration path; the
+  deprecated `GET /rest/api/3/search` endpoint is never used.
+- `downloadAttachment` — `GET /rest/api/3/attachment/content/{id}` binary download;
+  computes a SHA-256 `contentHash` immediately after download for integrity verification.
+- `getPaginated` — generic paginator using Jira's `startAt / maxResults / isLast` pattern;
+  stops on `isLast === true` or when the returned `values` array is shorter than `pageSize`.
+- `_createForTesting` / `_clearInstances` — test-double injection points for hermetic
+  unit and smoke tests; production code uses `JiraHttpClient.forConnection(connectionId)`.
+- Single-flight refresh mutex: concurrent callers queue behind one in-flight
+  `POST https://auth.atlassian.com/oauth/token`; both `accessToken` and `refreshToken`
+  are atomically committed to the `credentials` table before the mutex releases.
+
+#### Backup Engine type contracts — `src/workload/backup/types.ts`
+- `IJiraHttpClient` interface decoupling the backup engine from transport concerns.
+- `CapturePhase` / `CAPTURE_PHASE_ORDER` — immutable dependency-ordered capture sequence:
+  `IssueType → CustomField + FieldConfiguration → Workflow + WorkflowScheme → Project → Board → Sprint → Issue`.
+- `BackupManifest`, `ProjectRecord`, `JsmDeferredProject` — manifest schema types.
+- `IssueRecord` — full Issue payload satisfying the coverage invariant (all system fields,
+  `customFieldValues` map, ADF comments, issue links, subtasks, sprint membership, watchers,
+  worklogs, and attachment references).
+- `CaptureProgressEvent`, `ICaptureOrchestrator`, `CaptureRunResult` — orchestrator interface
+  with phase progress events emitted at most every 10 seconds.
+
+#### Project discovery — `src/workload/backup/discoverProjects.ts`
+- `discoverProjects(client, cloudBaseUrl, scope, selectedKeys?)` — paginates
+  `GET /rest/api/3/project/search` via `JiraHttpClient.getPaginated`, honouring
+  `projectScope` (`all` / `selected`).
+- Zero-omissions invariant: every project returned by the API appears in either
+  `projects[]` (backed up) or `jsmDeferredProjects[]` (deferred) — no project
+  is silently omitted (T3 §4.3, T4 §6).
+- JSM detection: projects with `projectTypeKey === 'service_desk'` are separated
+  into `jsmDeferredProjects` with `reason: 'PHASE_2_DEFERRED'` and a structured
+  `[discover] jsm-deferred` log line per excluded project.
+- `partitionJsmProjects` — pure helper for classifying a flat project array;
+  used by `discoverProjects` and directly testable in isolation.
+
+#### Discover operation — `src/workload/JiraWorkload.ts`, `src/routes/discover.ts`
+- `JiraWorkload.discover(connectionId, policy)` — resolves credentials from the DB,
+  constructs the `cloudBaseUrl` (`https://api.atlassian.com/ex/jira/{cloudId}`),
+  calls `discoverProjects`, assembles a `BackupManifest`, and persists it to
+  `backup_manifests` in a single `INSERT`.
+- Returns `{ backupPointId, completedAt, projectCount, jsmDeferredCount }` to the
+  platform layer.
+- `WorkloadAuthError` — typed error thrown when the connection or credentials row is
+  missing; surfaced by the route as HTTP 401.
+- `POST /api/discover` — route accepting `{ connectionId, projectScope, selectedProjectKeys? }`;
+  validates required fields (HTTP 400) and delegates to `jiraWorkload.discover()`;
+  surfaces `WorkloadAuthError` as HTTP 401.
+
+#### Database migration — `src/db/migrations/009_backup_manifests.sql`
+- `backup_manifests` table (`id`, `connectionId` FK → `connections`, `cloudId`,
+  `createdAt`, `manifestJson`) storing the full `BackupManifest` JSON payload
+  produced by each discover run.
+
+#### Smoke probe — `scripts/smoke-discover.ts`
+- Standalone `tsx` script that exercises `JiraWorkload.discover()` with an
+  in-memory SQLite database and a mocked Atlassian project-search API (3 software +
+  1 JSM project). Asserts `projectCount`, `jsmDeferredCount`, manifest row written
+  to `backup_manifests`, and `PHASE_2_DEFERRED` reason on the deferred entry.
+- Run with `npx tsx scripts/smoke-discover.ts`. No live credentials required.
+
+---
+
 ## [Sprint 2] — 2026-05-04 — Platform Stub Endpoints, Manual Connection & Doc Grounding
 
 ### Added

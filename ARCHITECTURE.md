@@ -72,6 +72,155 @@ token expires rather than waiting for a 401.
 
 ---
 
+## Backup Engine
+
+### Overview
+
+The Backup Engine is the workload-side implementation of `PlatformWorkloadInterface.discover()`
+and `PlatformWorkloadInterface.snapshot()`. It is entirely contained within
+`src/workload/backup/`. All type contracts live in `src/workload/backup/types.ts`.
+
+The engine is structured around three concerns:
+
+1. **HTTP Client** — `IJiraHttpClient` abstracts all Atlassian REST calls behind
+   a small, testable interface. The concrete implementation is `JiraHttpClient`
+   (`src/http/JiraHttpClient.ts`), which holds the rotating-token mutex. Tests
+   inject a double via the interface.
+
+2. **Capture-Order Orchestrator** — `ICaptureOrchestrator` executes phases in the
+   mandatory sequence and emits progress events. A phase failure halts the run and
+   populates `phaseDiagnostic` before returning.
+
+3. **Manifest** — `BackupManifest` is the artifact produced by `discover()`. It
+   carries the full project inventory, JSM-deferred notices, and — after
+   `snapshot()` — the coverage invariant.
+
+### Phase Order
+
+The orchestrator must execute phases **in this exact order**. No phase may be
+skipped or reordered. Context nodes (IssueType through WorkflowScheme) are always
+captured before Protected Objects (Project through Issue). Source: T1 §1, T3 §3.4.
+
+```
+Capture order (read-side / backup):
+  IssueType
+    → CustomField + FieldConfiguration
+    → Workflow + WorkflowScheme
+    → Project
+    → Board
+    → Sprint
+    → Issue
+
+Restore write order (mirror):
+  Project
+    → Workflow + WorkflowScheme
+    → CustomField + FieldConfiguration
+    → Board
+    → Sprint
+    → Issue body
+    → issue links + comments + attachments (post-issue-creation pass)
+```
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `src/workload/backup/types.ts` | All backup engine type contracts (see below) |
+| `src/workload/http/JiraHttpClient.ts` | Concrete `IJiraHttpClient` implementation for the backup engine |
+| `src/platform_workload_iface.ts` | `PlatformWorkloadInterface` — the boundary `discover()` / `snapshot()` sit on |
+
+### `IJiraHttpClient` Interface
+
+```typescript
+interface IJiraHttpClient {
+  getJson<T>(cloudBaseUrl: string, path: string, params?: Record<string, string>): Promise<T>;
+  searchJql(cloudBaseUrl: string, body: JqlSearchRequest): Promise<JqlSearchResponse>;
+  downloadAttachment(cloudBaseUrl: string, attachmentId: string): Promise<AttachmentDownload>;
+}
+```
+
+- `getJson` — authenticated GET; caller drives pagination via `startAt` / `maxResults`.
+- `searchJql` — **exclusive** Issue enumeration path. The deprecated
+  `GET /rest/api/3/search` must not appear anywhere in backup-engine code
+  (T2 §6 Constraint 6). Pagination terminates when
+  `issues.length === 0 || issues.length < maxResults`.
+- `downloadAttachment` — binary-faithful download via
+  `GET /rest/api/3/attachment/content/{id}`. Returns raw bytes + SHA-256
+  `contentHash`; no transcoding or recompression is applied (T3 §3.2, §4.4).
+
+### `ICaptureOrchestrator` Interface
+
+```typescript
+interface ICaptureOrchestrator {
+  runCapture(
+    options: CaptureRunOptions,
+    onProgress: (event: CaptureProgressEvent) => void
+  ): Promise<CaptureRunResult>;
+}
+```
+
+- `onProgress` is called at ≤10-second intervals. A gap of >20 s triggers a
+  **stalled** alert in the UI (T5 §6.2).
+- `CaptureRunResult.errorCount > 0` ⇒ UI shows "Completed with N errors",
+  never "Completed successfully" (T5 §6.2b).
+- `CaptureRunResult.phaseDiagnostic` is set and subsequent phases are not run
+  when any phase returns `status: 'failed'` (T5 §5.2).
+
+### `BackupManifest` Schema
+
+```typescript
+interface BackupManifest {
+  manifestId: string;           // UUID
+  cloudId: string;              // Atlassian site cloudId
+  discoveredAt: string;         // ISO-8601
+  projectScope: 'all' | 'selected';
+  selectedProjectKeys: string[];
+  projects: ProjectRecord[];
+  jsmDeferredProjects: JsmDeferredProject[];
+  coverageInvariant: CoverageInvariant | null;
+}
+```
+
+**Zero-omissions invariant**: every project returned by
+`GET /rest/api/3/project/search` appears in either `projects` or
+`jsmDeferredProjects` — never silently omitted (T3 §4.3, T4 §6).
+
+**JSM detection**: if `projectTypeKey === 'service_desk'`, the project is
+placed in `jsmDeferredProjects` with `reason: 'PHASE_2_DEFERRED'` and excluded
+from all backup phases. The onboarding wizard surfaces an out-of-scope notice
+when this list is non-empty (T1 §1, T2 §6 Constraint 11).
+
+**Coverage invariant** (`CoverageInvariant`): populated by the Issue phase.
+`customFieldValues` on each `IssueRecord` must contain every custom field the
+API returns — no field dropped. System fields (`custom: false`) are skipped
+for context discovery but their IDs are recorded in `systemFieldsSkipped`
+(T2 §6 Constraint 7, T3 §3.5).
+
+### Project Discovery
+
+Project discovery is performed via paginated
+`GET /rest/api/3/project/search`. The `projectScope` field from the active
+backup policy controls which projects are included:
+
+- `"all"` — every page of results is consumed until the API returns an empty
+  page; all projects are included.
+- `"selected"` — same pagination, but only projects whose `key` appears in
+  `selectedProjectKeys` are written to the manifest.
+
+The paginated loop must consume all pages before proceeding to the next capture
+phase. Discovery feeds `BackupManifest.projects` and
+`BackupManifest.jsmDeferredProjects`.
+
+### Custom Field Context Discovery
+
+Custom field context is discovered via
+`GET /rest/api/3/field/{id}/context` **only for fields where `custom: true`**.
+System fields (`custom: false`) must never be passed to this endpoint — a
+`[field-context] skip field_id=<id> reason=system-field` log line is emitted
+for each skipped field (T2 §6 Constraint 7, T3 §4.2).
+
+---
+
 ## API Surface (T0 §2)
 
 The Platform Stub exposes four endpoint groups. All paths are mounted under

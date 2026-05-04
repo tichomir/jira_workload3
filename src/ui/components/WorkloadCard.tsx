@@ -89,15 +89,14 @@ export function WorkloadCard() {
         </div>
 
         <p className="wc__value-prop">
-          Protect your Jira Cloud data with automated daily backups and granular
-          point-in-time restore for Issues, Projects, Boards, and Sprints — without
-          waiting on Atlassian support.
+          Daily offsite backup of Issues, Projects, Boards, Sprints, Workflows,
+          Custom Fields, Attachments
         </p>
 
         <div className="wc__requirements">
           <h3 className="wc__requirements-title">Before you connect</h3>
           <ul className="wc__requirements-list">
-            <li>Site Admin or Atlassian Org Admin role required</li>
+            <li>Atlassian Site Admin or Organization Admin role required</li>
             <li>OAuth 2.0 app registered in the Atlassian Developer Console with Phase 1 scopes</li>
           </ul>
         </div>

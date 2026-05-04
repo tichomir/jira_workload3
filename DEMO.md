@@ -116,6 +116,83 @@ granted (`read:me`, `read:field:jira`, `read:board-scope:jira-software`,
 
 ---
 
+---
+
+## Discover Projects
+
+After connecting a Jira site, trigger project discovery to enumerate all
+projects on the site and write a backup-point manifest to the
+`backup_manifests` table.  Discovery enforces the Phase 1 capture order:
+`service_desk` (JSM) projects are detected, excluded from backup, and flagged
+`PHASE_2_DEFERRED` in the manifest.
+
+### Trigger a discover run — all projects
+
+```bash
+CONNECTION_ID=<id-from-connections-list>
+
+curl -sf -X POST http://localhost:3000/api/discover \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"connectionId\": \"${CONNECTION_ID}\",
+    \"projectScope\": \"all\"
+  }" | python3 -m json.tool
+```
+
+Expected response:
+
+```json
+{
+  "backupPointId": "550e8400-e29b-41d4-a716-446655440000",
+  "completedAt": "2026-05-04T21:00:00.000Z",
+  "projectCount": 12,
+  "jsmDeferredCount": 2
+}
+```
+
+- `backupPointId` — UUID of the manifest row written to `backup_manifests`.
+- `projectCount` — non-JSM projects included in the backup scope.
+- `jsmDeferredCount` — `service_desk` projects detected and excluded from Phase 1
+  backup; flagged `PHASE_2_DEFERRED` in the manifest.
+
+### Trigger a discover run — selected projects
+
+```bash
+curl -sf -X POST http://localhost:3000/api/discover \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"connectionId\": \"${CONNECTION_ID}\",
+    \"projectScope\": \"selected\",
+    \"selectedProjectKeys\": [\"MYPROJ\", \"DEMO\"]
+  }" | python3 -m json.tool
+```
+
+### Observe JSM-deferred entries in the manifest
+
+When `jsmDeferredCount > 0`, retrieve the manifest to inspect which
+`service_desk` projects were excluded:
+
+```bash
+BACKUP_POINT_ID=<backupPointId-from-discover-response>
+
+sqlite3 data/jira_workload.db \
+  "SELECT manifestJson FROM backup_manifests WHERE id = '${BACKUP_POINT_ID}';" \
+  | python3 -m json.tool
+```
+
+Each deferred entry has the form:
+
+```json
+{
+  "projectId": "10042",
+  "projectKey": "JSMSUPPORT",
+  "projectName": "Customer Support (JSM)",
+  "reason": "PHASE_2_DEFERRED"
+}
+```
+
+---
+
 ## Smoke probes (machine-readable)
 
 Each block below is a self-contained POSIX shell script. Run them in order
@@ -299,4 +376,24 @@ echo "${POLICY}" | grep -q '"updatedAt"' \
 
 echo ""
 echo "All stub-endpoint smoke checks passed."
+```
+
+### Probe 4 — discover-flow
+
+```bash
+#!/usr/bin/env bash
+# discover-flow smoke probe
+# Exercises JiraWorkload.discover() with an in-memory mock of the Atlassian
+# project-search API. No running API server or live credentials required.
+#
+# Prerequisite: tsx available via npx (installed by npm install)
+set -euo pipefail
+
+echo "==> Running discover-flow smoke probe (mock Atlassian, in-memory DB)"
+npx tsx scripts/smoke-discover.ts \
+  && echo "PASS: discover-flow probe exited 0" \
+  || { echo "FAIL: discover-flow probe exited non-zero"; exit 1; }
+
+echo ""
+echo "All discover-flow smoke checks passed."
 ```

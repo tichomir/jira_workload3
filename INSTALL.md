@@ -41,7 +41,7 @@ development the redirect URI must be served over HTTPS. The recommended setup is
 Caddy as a local TLS terminator:
 
 1. Install [Caddy](https://caddyserver.com/docs/install).
-2. Create a `Caddyfile` in a directory of your choice:
+2. A `Caddyfile` is included in the project root with the correct configuration:
 
 ```
 localhost {
@@ -50,7 +50,7 @@ localhost {
 }
 ```
 
-3. Run `caddy run` from that directory. Caddy provisions a locally-trusted TLS
+3. Run `caddy run` from the project root. Caddy provisions a locally-trusted TLS
    certificate automatically via its internal CA.
 4. Set `OAUTH_REDIRECT_URI=https://localhost/api/oauth/callback` in `.env` and
    register the same URI in the Atlassian developer console.

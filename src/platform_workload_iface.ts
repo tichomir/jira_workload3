@@ -12,17 +12,24 @@ import type { Connection, CredentialRecord } from "./types/connection";
 // Shared result shapes
 // ---------------------------------------------------------------------------
 
+/**
+ * Policy passed to discover() describing which projects to include.
+ */
+export interface DiscoverPolicy {
+  projectScope: 'all' | 'selected';
+  /** Required when projectScope === 'selected'. */
+  selectedProjectKeys?: string[];
+}
+
 export interface DiscoverResult {
-  /** Opaque manifest identifier for this discovery run. */
-  manifestId: string;
+  /** Opaque backup-point identifier for this discovery run (UUID). */
+  backupPointId: string;
   /** ISO-8601 timestamp when discovery completed. */
   completedAt: string;
-  counts: {
-    projects: number;
-    issues: number;
-    boards: number;
-    sprints: number;
-  };
+  /** Number of non-JSM projects included in the manifest. */
+  projectCount: number;
+  /** Number of service_desk projects deferred to Phase 2. */
+  jsmDeferredCount: number;
 }
 
 export interface SnapshotResult {
@@ -78,10 +85,11 @@ export interface RestoreOptions {
  */
 export interface PlatformWorkloadInterface {
   /**
-   * Discover all objects on the connected site and write a manifest.
-   * Must produce zero silent omissions — every API-returned object is represented.
+   * Discover all projects on the connected site and write a backup-point manifest.
+   * Accepts connectionId + policy (projectScope, selectedProjectKeys).
+   * Must produce zero silent omissions — every API-returned project is represented.
    */
-  discover(connection: Connection): Promise<DiscoverResult>;
+  discover(connectionId: string, policy: DiscoverPolicy): Promise<DiscoverResult>;
 
   /**
    * Capture a full backup snapshot for the given manifest.
