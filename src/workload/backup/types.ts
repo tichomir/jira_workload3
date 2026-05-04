@@ -200,6 +200,12 @@ export interface CaptureRunOptions {
   projectScope: ProjectScope;
   /** Required when projectScope === 'selected'. */
   selectedProjectKeys?: string[];
+  /**
+   * Base directory for attachment binary storage.
+   * Defaults to 'data/attachments' when absent.
+   * Override via DCC_ATTACHMENT_DIR environment variable.
+   */
+  attachmentBaseDir?: string;
 }
 
 /** Result returned by ICaptureOrchestrator.runCapture(). */
@@ -282,6 +288,12 @@ export interface ProjectRecord {
   sprintIds: string[];
   /** Change relative to the previous backup point. */
   changeBadge: ChangeBadge;
+  /**
+   * Manifest ID of the last backup run that contained this project.
+   * Only present on entries where changeBadge === 'deleted'.
+   * Source: T4 §6.
+   */
+  lastSeenBackupPointId?: string;
 }
 
 /**
@@ -392,6 +404,19 @@ export interface BackupManifest {
    * null when only discovery (not snapshot) has run.
    */
   coverageInvariant: CoverageInvariant | null;
+  /**
+   * Aggregate change counts from the manifest deletion-diff pass.
+   * Computed after Snapshot completes by comparing projects[] to the previous
+   * backup-point manifest for the same connectionId.
+   * null before the first snapshot diff has run.
+   * Source: T4 §6.
+   */
+  diffSummary: {
+    added: number;
+    modified: number;
+    deleted: number;
+    unchanged: number;
+  } | null;
 }
 
 // ---------------------------------------------------------------------------

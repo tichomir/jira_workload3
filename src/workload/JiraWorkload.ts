@@ -13,7 +13,9 @@ import { getDb } from '../db/database.js';
 import { JiraHttpClient } from './http/JiraHttpClient.js';
 import { discoverProjects } from './backup/discoverProjects.js';
 import { discoverFieldContexts } from './backup/discoverFieldContexts.js';
+import { computeManifestDiff } from './backup/computeManifestDiff.js';
 import { CaptureOrchestrator } from './snapshot/CaptureOrchestrator.js';
+import { ProgressEmitter } from './snapshot/ProgressEmitter.js';
 import type {
   PlatformWorkloadInterface,
   DiscoverPolicy,
@@ -98,6 +100,7 @@ export class JiraWorkload implements PlatformWorkloadInterface {
       customFieldsCaptured: null,
       customFieldsSkipped: [],
       coverageInvariant: null,
+      diffSummary: null,
     };
 
     db.prepare(
@@ -133,35 +136,63 @@ export class JiraWorkload implements PlatformWorkloadInterface {
     const client = JiraHttpClient.forConnection(connection.connectionId);
     const orchestrator = new CaptureOrchestrator(client, manifest);
 
-    const progressEvents: CaptureProgressEvent[] = [];
+    const emitter = new ProgressEmitter(manifestId, manifestId, connection.connectionId);
+    emitter.start();
 
-    const captureResult = await orchestrator.runCapture(
-      {
-        connectionId: connection.connectionId,
-        cloudId: connection.cloudId,
-        cloudBaseUrl,
-        manifestId,
-        projectScope: manifest.projectScope,
-        selectedProjectKeys: manifest.selectedProjectKeys,
-      },
-      (event) => {
-        progressEvents.push(event);
-        console.log(
-          `[snapshot-progress] phase=${event.phase}` +
-            ` captured=${event.itemsCaptured}` +
-            ` total=${event.itemsTotal ?? 'unknown'}` +
-            ` elapsedMs=${event.elapsedMs}`
-        );
-      }
-    );
+    let captureResult;
+    try {
+      captureResult = await orchestrator.runCapture(
+        {
+          connectionId: connection.connectionId,
+          cloudId: connection.cloudId,
+          cloudBaseUrl,
+          manifestId,
+          projectScope: manifest.projectScope,
+          selectedProjectKeys: manifest.selectedProjectKeys,
+          attachmentBaseDir: process.env['DCC_ATTACHMENT_DIR'],
+        },
+        (event) => {
+          emitter.emit(event);
+          console.log(
+            `[snapshot-progress] phase=${event.phase}` +
+              ` captured=${event.itemsCaptured}` +
+              ` total=${event.itemsTotal ?? 'unknown'}` +
+              ` elapsedMs=${event.elapsedMs}`
+          );
+        }
+      );
+    } catch (err) {
+      emitter.fail(err instanceof Error ? err.message : String(err));
+      throw err;
+    }
+
+    emitter.complete(captureResult.errorCount);
 
     const customFieldPhase = captureResult.phaseResults.find(
       (p) => p.phase === 'CustomField'
     );
     const issuePhase = captureResult.phaseResults.find((p) => p.phase === 'Issue');
 
+    // Load the previous manifest for this connectionId (any manifest other than the current one)
+    // to compute the deletion-diff. Null on the first-ever backup run.
+    const prevRow = db
+      .prepare(
+        `SELECT manifestJson FROM backup_manifests
+          WHERE connectionId = ? AND id != ?
+          ORDER BY createdAt DESC
+          LIMIT 1`
+      )
+      .get(connection.connectionId, manifestId) as { manifestJson: string } | undefined;
+
+    const previousManifest: BackupManifest | null = prevRow
+      ? (JSON.parse(prevRow.manifestJson) as BackupManifest)
+      : null;
+
+    const diffResult = computeManifestDiff(manifest, previousManifest);
+
     const updatedManifest: BackupManifest = {
       ...manifest,
+      projects: diffResult.projects,
       fieldContexts: captureResult.fieldContexts,
       customFieldsCaptured: customFieldPhase?.itemCount ?? 0,
       customFieldsSkipped: [],
@@ -172,6 +203,7 @@ export class JiraWorkload implements PlatformWorkloadInterface {
         issuesWithErrors: issuePhase?.errorCount ?? 0,
         systemFieldsSkipped: [],
       },
+      diffSummary: diffResult.summary,
     };
 
     db.prepare('UPDATE backup_manifests SET manifestJson = ? WHERE id = ?').run(

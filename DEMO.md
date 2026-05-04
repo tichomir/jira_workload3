@@ -284,11 +284,251 @@ sqlite3 data/jira_workload.db \
   "SELECT json_extract(manifestJson, '$.coverageInvariant') FROM backup_manifests WHERE id = '${BACKUP_POINT_ID}';"
 ```
 
-### Snapshot HTTP endpoint — Phase 3 deliverable
+### Snapshot HTTP endpoint
 
-The `/api/snapshot` HTTP route is not yet exposed in this sprint. Issue
-enumeration and capture logic are fully implemented and verified via unit tests;
-the HTTP surface is a Sprint 3 deliverable.
+The `/api/snapshot` HTTP route is not yet exposed. Issue enumeration, attachment
+download, and capture orchestration are fully implemented and verified via unit
+tests; the HTTP surface will be wired in a follow-on sprint.
+
+---
+
+## Create a Backup Policy
+
+Before running a snapshot, create a backup policy that specifies the Recovery
+Point Objective, retention window, and project scope.
+
+### Create a policy — all projects
+
+```bash
+CONNECTION_ID=<id-from-connections-list>
+
+curl -sf -X POST http://localhost:3000/api/policies \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"connectionId\":  \"${CONNECTION_ID}\",
+    \"rpoHours\":      24,
+    \"retentionDays\": 30,
+    \"projectScope\":  \"all\"
+  }" | python3 -m json.tool
+```
+
+Expected response (HTTP 201):
+
+```json
+{
+  "policyId": "550e8400-e29b-41d4-a716-446655440000",
+  "connectionId": "<connection-id>",
+  "rpoHours": 24,
+  "projectScope": "all",
+  "selectedProjectKeys": [],
+  "retentionDays": 30,
+  "updatedAt": "2026-05-04T21:00:00.000Z"
+}
+```
+
+### Create a policy with a JQL filter
+
+```bash
+curl -sf -X POST http://localhost:3000/api/policies \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"connectionId\":  \"${CONNECTION_ID}\",
+    \"rpoHours\":      24,
+    \"retentionDays\": 30,
+    \"projectScope\":  \"all\",
+    \"jqlFilter\":     \"created >= -90d\"
+  }" | python3 -m json.tool
+```
+
+The server validates `jqlFilter` via `POST /rest/api/3/jql/parse` before storing
+the policy. An invalid JQL expression returns HTTP 400
+`{ "error": "invalid_jql", "details": {...} }`.
+
+### Create a policy — selected projects
+
+```bash
+curl -sf -X POST http://localhost:3000/api/policies \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"connectionId\":        \"${CONNECTION_ID}\",
+    \"rpoHours\":            24,
+    \"retentionDays\":       30,
+    \"projectScope\":        \"selected\",
+    \"selectedProjectKeys\": [\"MYPROJ\", \"DEMO\"]
+  }" | python3 -m json.tool
+```
+
+---
+
+## Attachments — Binary-Faithful Storage & SHA-256 Verification
+
+During a snapshot the capture orchestrator downloads every Issue attachment via
+`GET /rest/api/3/attachment/content/{id}` and stores it under:
+
+```
+data/attachments/{backupPointId}/{issueKey}/{attachmentId}
+data/attachments/{backupPointId}/{issueKey}/{attachmentId}.meta.json
+```
+
+The binary is stored byte-for-byte (no transcoding or recompression). The sidecar
+`{attachmentId}.meta.json` carries the SHA-256 digest, MIME type, original
+filename, and capture timestamp. After writing the binary the engine re-reads the
+file and re-verifies the SHA-256 — a mismatch is counted as a per-item error and
+appears in the job's `errorsCount`.
+
+The default storage root is `data/attachments`. Set `DCC_ATTACHMENT_DIR` in `.env`
+to override, e.g. `DCC_ATTACHMENT_DIR=/mnt/backup-volume/attachments`.
+
+### Server log output during attachment download
+
+```
+[attachment] op=download id=10042 bytes=45320 sha256=a1b2c3d4... outcome=ok
+[attachment] op=download id=10043 bytes=0 sha256= outcome=http_error
+[attachment] op=download id=10044 bytes=12800 sha256=d4e5f6a7... outcome=hash_mismatch
+```
+
+### Read a sidecar file to verify SHA-256
+
+```bash
+BACKUP_POINT_ID=<backupPointId>
+ISSUE_KEY=PROJ-42
+ATTACHMENT_ID=10042
+
+cat "data/attachments/${BACKUP_POINT_ID}/${ISSUE_KEY}/${ATTACHMENT_ID}.meta.json" \
+  | python3 -m json.tool
+```
+
+Example sidecar:
+
+```json
+{
+  "attachmentId": "10042",
+  "issueKey": "PROJ-42",
+  "backupPointId": "550e8400-e29b-41d4-a716-446655440000",
+  "filename": "screenshot.png",
+  "mimeType": "image/png",
+  "size": 45320,
+  "sha256": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+  "capturedAt": "2026-05-04T21:05:00.000Z"
+}
+```
+
+### Verify the binary matches its sidecar SHA-256
+
+```bash
+sha256sum "data/attachments/${BACKUP_POINT_ID}/${ISSUE_KEY}/${ATTACHMENT_ID}" \
+  | awk '{print $1}'
+```
+
+The printed hash must match `sha256` in the sidecar. A mismatch indicates storage
+corruption; the attachment should be re-captured.
+
+---
+
+## Job Progress & Stalled Detection
+
+### Server log format
+
+```
+[backup-job] op=start     jobId=<uuid> errors=0
+[backup-job] op=heartbeat jobId=<uuid> errors=0
+[backup-job] op=heartbeat jobId=<uuid> errors=2
+[backup-job] op=completed jobId=<uuid> errors=2
+```
+
+When no heartbeat is received for >20 seconds the job transitions to `stalled`:
+
+```
+[backup-job] op=stalled jobId=<uuid> errors=0
+```
+
+A job with per-item errors completes with status `completed_with_errors`; the UI
+displays **"Completed with N errors"** — never "Completed successfully."
+
+### Read job status via GET /api/jobs/:id
+
+```bash
+JOB_ID=<jobId-from-backup-run>
+
+curl -sf "http://localhost:3000/api/jobs/${JOB_ID}" | python3 -m json.tool
+```
+
+Response:
+
+```json
+{
+  "jobId": "...",
+  "status": "completed_with_errors",
+  "manifestId": "...",
+  "connectionId": "...",
+  "createdAt": "2026-05-04T21:00:00.000Z",
+  "updatedAt": "2026-05-04T21:06:12.000Z",
+  "errorsCount": 3,
+  "lastEvent": {
+    "jobId": "...",
+    "ts": "2026-05-04T21:06:12.000Z",
+    "phase": "Issue",
+    "processed": 137,
+    "total": 140,
+    "errorsCount": 3
+  }
+}
+```
+
+#### Job status values
+
+| Status | Meaning |
+|---|---|
+| `pending` | Job created, not yet started |
+| `running` | Capture in progress |
+| `completed` | All items captured without errors |
+| `completed_with_errors` | Completed with `errorsCount > 0` — UI shows **"Completed with N errors"** |
+| `stalled` | No heartbeat for >20 s |
+| `failed` | Fatal phase error; `phaseDiagnostic` in manifest |
+
+---
+
+## Manifest Change Badges
+
+After each snapshot the manifest diff pass stamps every project with a
+`changeBadge` relative to the previous backup point for the same connection.
+
+| Badge | Meaning |
+|---|---|
+| `added` | Project first appeared in this run |
+| `modified` | Present in both runs; `projectName`, `boardIds`, or `sprintIds` differ |
+| `unchanged` | Present in both runs; all tracked fields identical |
+| `deleted` | Absent from current run; entry retained with `lastSeenBackupPointId` |
+
+On the first-ever backup run every project receives `changeBadge: "added"`.
+
+### Inspect changeBadges for a backup point
+
+```bash
+BACKUP_POINT_ID=<backupPointId-from-discover-response>
+
+sqlite3 data/jira_workload.db \
+  "SELECT json_extract(value, '$.projectKey'),
+          json_extract(value, '$.changeBadge')
+   FROM backup_manifests,
+        json_each(json_extract(manifestJson, '$.projects'))
+   WHERE id = '${BACKUP_POINT_ID}';"
+```
+
+### Read the aggregate diff summary
+
+```bash
+sqlite3 data/jira_workload.db \
+  "SELECT json_extract(manifestJson, '$.diffSummary')
+   FROM backup_manifests
+   WHERE id = '${BACKUP_POINT_ID}';"
+```
+
+Example output:
+
+```json
+{"added": 3, "modified": 1, "deleted": 0, "unchanged": 8}
+```
 
 ---
 
@@ -454,6 +694,7 @@ POLICY=$(curl -sf -X POST "${BASE}/api/policies" \
   -H 'Content-Type: application/json' \
   -d "{
     \"connectionId\":  \"${CONNECTION_ID}\",
+    \"rpoHours\":      24,
     \"projectScope\":  \"all\",
     \"retentionDays\": 30
   }")
@@ -465,6 +706,7 @@ assert 'policyId' in data, 'missing policyId'
 assert data.get('connectionId') == '${CONNECTION_ID}', 'connectionId mismatch'
 assert data.get('projectScope') == 'all', 'projectScope mismatch'
 assert data.get('retentionDays') == 30, 'retentionDays mismatch'
+assert data.get('rpoHours') == 24, f'rpoHours mismatch: expected 24 got {data.get(\"rpoHours\")}'
 print('PASS: POST /api/policies returned valid policy response')
 "
 
@@ -524,4 +766,73 @@ npx vitest run src/workload/snapshot/CaptureOrchestrator.test.ts \
 
 echo ""
 echo "All field-context + issue-enumeration smoke checks passed."
+```
+
+### Probe 6 — Sprint 3 deliverables: policies (rpoHours), job status, attachment SHA-256 & manifest changeBadge
+
+```bash
+#!/usr/bin/env bash
+# Sprint 3 smoke probe — policies rpoHours, GET /api/jobs/:id,
+# downloadIssueAttachments SHA-256 unit tests, computeManifestDiff changeBadge
+# unit tests.
+# Requires: running API server (npm run server) for steps 1–4.
+set -euo pipefail
+
+PORT=${PORT:-3000}
+BASE="http://localhost:${PORT}"
+SMOKE_CLOUD_ID="smoke-sprint3-$(date +%s)"
+
+echo "==> [1/5] Create connection for Sprint 3 probe"
+CONN_RESPONSE=$(curl -sf -X POST "${BASE}/api/connections" \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"cloudId\":      \"${SMOKE_CLOUD_ID}\",
+    \"siteName\":     \"Sprint 3 Probe Site\",
+    \"accessToken\":  \"smoke-access-token\",
+    \"refreshToken\": \"smoke-refresh-token\",
+    \"expiresAt\":    9999999999
+  }")
+
+CONNECTION_ID=$(echo "${CONN_RESPONSE}" | python3 -c "import json,sys; print(json.load(sys.stdin)['connectionId'])")
+echo "PASS: connection created ${CONNECTION_ID}"
+
+echo "==> [2/5] POST /api/policies with rpoHours"
+POLICY=$(curl -sf -X POST "${BASE}/api/policies" \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"connectionId\":  \"${CONNECTION_ID}\",
+    \"rpoHours\":      24,
+    \"retentionDays\": 30,
+    \"projectScope\":  \"all\"
+  }")
+
+echo "${POLICY}" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+assert 'policyId' in data, 'missing policyId'
+assert data.get('rpoHours') == 24, f'rpoHours mismatch: expected 24 got {data.get(\"rpoHours\")}'
+assert data.get('retentionDays') == 30, 'retentionDays mismatch'
+assert data.get('connectionId') == '${CONNECTION_ID}', 'connectionId mismatch'
+assert 'updatedAt' in data, 'missing updatedAt'
+print('PASS: POST /api/policies returned valid policy with rpoHours=24')
+"
+
+echo "==> [3/5] GET /api/jobs/:id returns 404 for unknown job"
+HTTP_STATUS=$(curl -o /dev/null -s -w '%{http_code}' "${BASE}/api/jobs/no-such-job-id")
+[ "${HTTP_STATUS}" -eq 404 ] \
+  && echo "PASS: GET /api/jobs/:id returned 404 for unknown job" \
+  || { echo "FAIL: expected 404 got ${HTTP_STATUS}"; exit 1; }
+
+echo "==> [4/5] downloadIssueAttachments unit tests (SHA-256 verification)"
+npx vitest run src/workload/snapshot/downloadIssueAttachments.test.ts \
+  && echo "PASS: downloadIssueAttachments tests passed" \
+  || { echo "FAIL: downloadIssueAttachments tests failed"; exit 1; }
+
+echo "==> [5/5] computeManifestDiff unit tests (changeBadge verification)"
+npx vitest run src/workload/backup/computeManifestDiff.test.ts \
+  && echo "PASS: computeManifestDiff tests passed" \
+  || { echo "FAIL: computeManifestDiff tests failed"; exit 1; }
+
+echo ""
+echo "All sprint3-deliverables smoke checks passed."
 ```

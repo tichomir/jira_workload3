@@ -4,6 +4,99 @@ All notable changes are documented here by sprint.
 
 ---
 
+## [Sprint 3 — Phase 2] — 2026-05-04 — Attachments, Manifest Diff, Policies & Progress Telemetry
+
+### Added
+
+#### Binary-faithful attachment storage — `src/workload/snapshot/downloadIssueAttachments.ts`
+- `downloadIssueAttachments(client, cloudBaseUrl, backupPointId, issueKey, attachments, baseDir?)` —
+  downloads every attachment ref in an Issue payload via `IJiraHttpClient.downloadAttachment()`
+  (no raw `fetch`/`axios`); writes the binary byte-for-byte to disk and re-reads it to
+  verify SHA-256 before writing the sidecar (T3 §3.2, §4.4).
+- Disk layout:
+  - Binary: `data/attachments/{backupPointId}/{issueKey}/{attachmentId}`
+  - Sidecar: `data/attachments/{backupPointId}/{issueKey}/{attachmentId}.meta.json`
+- Post-write SHA-256 mismatch is recorded as a per-item error (`outcome=hash_mismatch`);
+  processing of remaining attachments continues.
+- Structured log per attachment:
+  `[attachment] op=download id=<id> bytes=<n> sha256=<hex> outcome=<ok|hash_mismatch|http_error>`
+- Storage root defaults to `data/attachments`; override via `DCC_ATTACHMENT_DIR` env var.
+- Wired into `CaptureOrchestrator.runCapture()` — attachment errors increment `issueErrorCount`
+  without aborting the Issue phase.
+
+#### Attachment storage contracts — `src/workload/types/Attachment.ts`
+- `AttachmentStoragePaths` — `{ binaryPath, sidecarPath }` pair resolved by
+  `resolveAttachmentPaths(backupPointId, issueKey, attachmentId, baseDir?)`.
+- `AttachmentSidecar` — JSON sidecar schema: `attachmentId`, `issueKey`, `backupPointId`,
+  `filename`, `mimeType`, `size`, `sha256`, `capturedAt`.
+- `Attachment` — composite of paths + metadata consumed by the restore engine.
+
+#### Manifest deletion-diff — `src/workload/backup/computeManifestDiff.ts`
+- `computeManifestDiff(current, previous)` — compares the current `BackupManifest` against
+  the previous one for the same `connectionId`; stamps each `ProjectRecord.changeBadge` with
+  `added` | `modified` | `deleted` | `unchanged` (T4 §6).
+- `stableProjectHash(p)` — SHA-256 digest of `{ projectKey, projectName, projectTypeKey,
+  boardIds (sorted), sprintIds (sorted) }`; excludes volatile timestamps and computed counts.
+- Deleted projects are retained in `projects[]` with `changeBadge: 'deleted'` and
+  `lastSeenBackupPointId` pointing to the manifest where they last appeared.
+- `DiffSummary` — aggregate `{ added, modified, deleted, unchanged }` counts persisted
+  as `BackupManifest.diffSummary` after every snapshot run.
+
+#### Manifest diff contracts — `src/workload/types/ManifestDiff.ts`
+- `ChangeBadge`, `ProjectDiffEntry`, `ManifestDiffSummary`, `ManifestDiff` — type contracts
+  for the deletion-diff pass.
+
+#### `POST /api/policies` — `src/routes/policies.ts`
+- Accepts `{ connectionId, rpoHours, retentionDays, projectScope, selectedProjectKeys?,
+  jqlFilter? }`.
+- `rpoHours` (required, > 0) — Recovery Point Objective in hours.
+- `jqlFilter` (optional) — validated via `POST /rest/api/3/jql/parse` before the policy
+  is stored; HTTP 400 `{ "error": "invalid_jql" }` on parse failure.
+- Returns HTTP 201 with `{ policyId, connectionId, rpoHours, projectScope,
+  selectedProjectKeys, retentionDays, jqlFilter?, updatedAt }`.
+
+#### Policy type contracts — `src/workload/types/PolicyRecord.ts`
+- `PolicyRecord`, `PolicyRequest`, `JqlParseRequest`, `JqlParseResponse` — shape definitions
+  for the policy store and the JQL validation round-trip.
+
+#### `GET /api/jobs/:id` — `src/routes/jobs.ts`
+- Returns `{ jobId, status, manifestId, connectionId, createdAt, updatedAt, errorsCount,
+  lastEvent }` for a backup job.
+- `lastEvent` is the most recent `backup_job_events` row (parsed from `eventJson`).
+- HTTP 404 when the job ID is not found.
+
+#### Progress emitter & stalled detection — `src/workload/snapshot/ProgressEmitter.ts`
+- `ProgressEmitter` manages the `backup_jobs` + `backup_job_events` tables for a single job.
+- `start()` — transitions job to `running` and arms the watchdog timer (polls every 5 s).
+- `emit(captureEvent, errorsCount)` — persists a heartbeat event row and resets the stalled
+  clock; satisfies the ≤10 s contract (T5 §6.2).
+- `complete(errorsCount)` — sets `completed` (errorsCount === 0) or `completed_with_errors`
+  (errorsCount > 0); clears the watchdog.
+- `fail(reason)` — sets `failed`; clears the watchdog.
+- Watchdog: transitions job to `stalled` when `Date.now() − lastHeartbeatMs > 20 000 ms`
+  (T5 §6.2).
+- Structured log: `[backup-job] op=start|heartbeat|stalled|completed|failed jobId=<id> errors=<n>`
+
+#### Progress event contracts — `src/workload/types/ProgressEvent.ts`
+- `ProgressEvent` — unified shape for backup and restore job heartbeats.
+- `JobStatus` — `pending | running | completed | completed_with_errors | failed | stalled`.
+- `MAX_HEARTBEAT_INTERVAL_MS = 10 000` — maximum gap between emitted events.
+- `STALLED_THRESHOLD_MS = 20 000` — silence threshold for stalled detection.
+
+#### Database migrations
+- `src/db/migrations/010_backup_jobs.sql` — `backup_jobs` table (`jobId`, `manifestId`,
+  `connectionId`, `status`, `createdAt`, `updatedAt`, `lastEventTs`, `errorsCount`) and
+  `backup_job_events` table with a `(jobId, ts)` index.
+- `src/db/migrations/010_policies_rpo_jql.sql` — adds `rpoHours INTEGER NOT NULL DEFAULT 24`
+  and `jqlFilter TEXT` columns to the existing `policies` table.
+
+#### Environment variable
+- `DCC_ATTACHMENT_DIR` — overrides the attachment binary storage root directory.
+  Default: `data/attachments`. Set in `.env` to redirect storage to an external volume,
+  e.g. `DCC_ATTACHMENT_DIR=/mnt/backup-volume/attachments`.
+
+---
+
 ## [Sprint 2 — Phase 2] — 2026-05-04 — Issue Enumeration, Custom Field Context & Capture Order
 
 ### Added

@@ -10,6 +10,7 @@
 
 import { discoverFieldContexts } from '../backup/discoverFieldContexts.js';
 import { assembleIssuePayload, assertCoverageInvariant } from './assembleIssuePayload.js';
+import { downloadIssueAttachments } from './downloadIssueAttachments.js';
 import type {
   IJiraHttpClient,
   ICaptureOrchestrator,
@@ -130,6 +131,27 @@ export class CaptureOrchestrator implements ICaptureOrchestrator {
             try {
               const payload = assembleIssuePayload(rawIssue, allCustomFieldIds);
               assertCoverageInvariant(payload, allCustomFieldIds);
+
+              // Download attachment binaries — per-attachment errors are counted
+              // as item-level errors but do not prevent the issue from being captured.
+              if (payload.attachments.length > 0) {
+                const attResult = await downloadIssueAttachments(
+                  this.client,
+                  options.cloudBaseUrl,
+                  options.manifestId,
+                  payload.key,
+                  payload.attachments,
+                  options.attachmentBaseDir
+                );
+                for (const attErr of attResult.errors) {
+                  issueErrorCount++;
+                  console.error(
+                    `[snapshot] attachment-error issueKey=${payload.key} ` +
+                      `attachmentId=${attErr.attachmentId} outcome=${attErr.outcome}: ${attErr.message}`
+                  );
+                }
+              }
+
               issueCaptured++;
             } catch (err) {
               issueErrorCount++;

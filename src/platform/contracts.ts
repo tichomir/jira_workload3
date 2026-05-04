@@ -115,6 +115,8 @@ export type ProjectScope = "all" | "selected";
  */
 export interface PolicyRequest {
   connectionId: string;
+  /** Recovery Point Objective in hours. Must be > 0. */
+  rpoHours: number;
   /**
    * "all" — back up every project on the site.
    * "selected" — back up only the projects listed in selectedProjectKeys.
@@ -125,17 +127,24 @@ export interface PolicyRequest {
    * Each entry is a Jira project key, e.g. ["PROJ", "INFRA"].
    */
   selectedProjectKeys?: string[];
-  /** Days to retain each backup point. */
+  /** Days to retain each backup point. Must be > 0. */
   retentionDays: number;
+  /**
+   * Optional JQL filter applied on top of projectScope to narrow which Issues
+   * are backed up. Validated via POST /rest/api/3/jql/parse before persisting.
+   */
+  jqlFilter?: string;
 }
 
-/** Response for POST /api/policies (HTTP 200). */
+/** Response for POST /api/policies (HTTP 201). */
 export interface PolicyResponse {
   policyId: string;
   connectionId: string;
+  rpoHours: number;
   projectScope: ProjectScope;
   selectedProjectKeys: string[];
   retentionDays: number;
+  jqlFilter?: string;
   updatedAt: string; // ISO-8601
 }
 

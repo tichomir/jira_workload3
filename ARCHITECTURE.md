@@ -380,21 +380,21 @@ The contract is captured verbatim as `PAGINATION_TERMINATION_CONTRACT` in
 
 Emitted **once per pagination request** to `POST /rest/api/3/search/jql`.
 
-**Verbatim format:**
+**Verbatim format** (source: `src/workload/http/JiraHttpClient.ts:107-109`):
 
 ```
-[search] project=<projectKey> jql="<jql>" startAt=<startAt> maxResults=<maxResults> returned=<returned> total=<total>
+[search] endpoint=search/jql project=<projectKey> page=<page> count=<count>
 ```
 
 **Example — 3-page run, project PROJ, 243 issues, maxResults=100:**
 
 ```
-[search] project=PROJ jql="project = PROJ ORDER BY created ASC" startAt=0   maxResults=100 returned=100 total=243
-[search] project=PROJ jql="project = PROJ ORDER BY created ASC" startAt=100 maxResults=100 returned=100 total=243
-[search] project=PROJ jql="project = PROJ ORDER BY created ASC" startAt=200 maxResults=100 returned=43  total=243
+[search] endpoint=search/jql project=PROJ page=1 count=100
+[search] endpoint=search/jql project=PROJ page=2 count=100
+[search] endpoint=search/jql project=PROJ page=3 count=43
 ```
 
-Pagination terminates after the third request because `returned(43) < maxResults(100)`.
+Pagination terminates after the third request because `count(43) < maxResults(100)`.
 
 Typed as `SearchLogLine` in `src/workload/snapshot/types.ts`.
 
@@ -462,6 +462,304 @@ persisted DB artifact that additionally carries `backupPointId` and `capturedAt`
 | `watcherAccountIds` | `string[]` | Issue watchers |
 | `worklogs` | `WorklogEntry[]` | Worklog entries |
 | `attachments` | `AttachmentRecord[]` | Attachment refs (binary stored separately) |
+
+---
+
+## Attachment Storage
+
+### Overview
+
+Attachment binaries are stored binary-faithful on disk under `data/attachments/`.
+Every binary is byte-for-byte identical to the source returned by
+`GET /rest/api/3/attachment/content/{id}` — no transcoding, recompression, or
+filename rewriting is applied (T3 §3.2, §4.4).
+
+Two files are written per attachment:
+
+| File | Purpose |
+|------|---------|
+| `data/attachments/{backupPointId}/{issueKey}/{attachmentId}` | Raw binary — opaque bytes |
+| `data/attachments/{backupPointId}/{issueKey}/{attachmentId}.meta.json` | Sidecar metadata JSON |
+
+Type stubs: `src/workload/types/Attachment.ts` — `Attachment`, `AttachmentStoragePaths`,
+`AttachmentSidecar`, `resolveAttachmentPaths`.
+
+### Path Scheme
+
+```
+data/
+  attachments/
+    {backupPointId}/          ← one directory per backup point
+      {issueKey}/             ← one directory per issue (e.g. PROJ-42)
+        {attachmentId}        ← raw binary, no extension
+        {attachmentId}.meta.json
+```
+
+`backupPointId` is the opaque backup-point UUID. `issueKey` is the Jira key
+(e.g. `PROJ-42`). `attachmentId` is the Atlassian numeric attachment ID
+(string form). Paths are resolved by `resolveAttachmentPaths()` in
+`src/workload/types/Attachment.ts`.
+
+### Sidecar Schema (`AttachmentSidecar`)
+
+```typescript
+interface AttachmentSidecar {
+  attachmentId:  string;  // Atlassian numeric attachment ID
+  issueKey:      string;  // e.g. "PROJ-42"
+  backupPointId: string;  // backup-point UUID
+  filename:      string;  // original filename — never rewritten
+  mimeType:      string;  // from Content-Type response header
+  size:          number;  // bytes
+  sha256:        string;  // hex digest; re-verified on restore
+  capturedAt:    string;  // ISO-8601
+}
+```
+
+`sha256` is computed immediately after the binary is written to disk.
+On restore, the engine reads the binary, recomputes SHA-256, and compares
+it against the sidecar before sending the bytes to Atlassian. A mismatch
+halts the restore for that attachment and adds an entry to `errors[]`.
+
+### Design Constraints
+
+- The binary file and its `.meta.json` sidecar are **always written together**.
+  A binary without a sidecar (or vice versa) is treated as a corrupt entry.
+- `AttachmentRecord` in `src/workload/backup/types.ts` is the **in-Issue
+  reference** (stores `contentHash` and metadata inline with the Issue record).
+  `AttachmentSidecar` is the **on-disk authority** for the binary.
+- ADF media node rewriting after restore is Phase 2 (see Non-Goals in CLAUDE.md).
+  A best-effort warning is surfaced in the restore report when attachment IDs
+  change (T5 OQ-5).
+
+---
+
+## Manifest Deletion-Diff
+
+### Overview
+
+After every Discover run the engine computes a deletion-diff by comparing the
+incoming project list against the persisted previous manifest. Each
+`ProjectRecord` receives a `changeBadge` reflecting its state relative to the
+prior backup point. The diff is stored as a `ManifestDiff` record alongside the
+new `BackupManifest`.
+
+Type stubs: `src/workload/types/ManifestDiff.ts` — `ChangeBadge`,
+`ProjectDiffEntry`, `ManifestDiffSummary`, `ManifestDiff`.
+
+### ChangeBadge Computation
+
+| Badge | Condition |
+|-------|-----------|
+| `added` | `projectId` present in current manifest; absent in previous |
+| `modified` | `projectId` present in both; ≥1 tracked field differs |
+| `deleted` | `projectId` present in previous manifest; absent in current |
+| `unchanged` | `projectId` present in both; all tracked fields identical |
+
+The comparison key is `projectId` (Atlassian numeric project ID), not
+`projectKey` — project keys can be renamed without changing the ID.
+
+On the **first-ever backup run** `previousManifestId` is `null` and every
+project receives `changeBadge: 'added'`.
+
+### ManifestDiff Schema
+
+```typescript
+interface ManifestDiff {
+  previousManifestId: string | null;  // null on first run
+  currentManifestId:  string;
+  computedAt:         string;         // ISO-8601
+  projects:           ProjectDiffEntry[];
+  summary:            ManifestDiffSummary;
+}
+
+interface ProjectDiffEntry {
+  projectId:   string;
+  projectKey:  string;
+  changeBadge: ChangeBadge;           // 'added' | 'modified' | 'deleted' | 'unchanged'
+  current:     ProjectRecord | null;  // null for deleted entries
+  previous:    ProjectRecord | null;  // null for added entries
+}
+
+interface ManifestDiffSummary {
+  added:     number;
+  modified:  number;
+  deleted:   number;
+  unchanged: number;
+  total:     number;  // === projects.length
+}
+```
+
+The UI displays the `changeBadge` alongside each project row in the Protected
+Object Inventory view. `deleted` projects are shown with a strikethrough badge
+to indicate they no longer exist on the Jira site.
+
+---
+
+## Progress Event Contract
+
+### Overview
+
+Both backup (`CaptureOrchestrator`) and restore jobs emit `ProgressEvent`
+objects on a heartbeat cadence. The platform layer handles them uniformly
+regardless of job type.
+
+Type stubs: `src/workload/types/ProgressEvent.ts` — `ProgressEvent`,
+`ProgressError`, `JobStatus`, `MAX_HEARTBEAT_INTERVAL_MS`, `STALLED_THRESHOLD_MS`.
+
+### Event Shape
+
+```typescript
+interface ProgressEvent {
+  jobId:     string;           // backup-point ID or restore job ID
+  ts:        string;           // ISO-8601 — moment of emission
+  phase:     string;           // current phase name, e.g. "Issue", "Sprint"
+  processed: number;           // items successfully processed in current phase
+  total:     number | null;    // null while total is not yet known
+  errors:    ProgressError[];  // all item-level errors accumulated across phases
+}
+
+interface ProgressError {
+  itemId:  string;  // Issue key, project ID, attachment ID, etc.
+  message: string;
+  phase:   string;  // phase in which the error occurred
+}
+```
+
+`errors` accumulates across the full job lifetime and is never reset between
+phases — the consumer always sees a running total.
+
+### Cadence and Stalled Detection
+
+| Constant | Value | Meaning |
+|----------|-------|---------|
+| `MAX_HEARTBEAT_INTERVAL_MS` | `10 000` | Maximum ms between emitted events |
+| `STALLED_THRESHOLD_MS` | `20 000` | Silence threshold before 'stalled' alert |
+
+A job with no heartbeat for >20 s must be surfaced as `'stalled'` in the UI
+(T5 §6.2). The orchestrator is responsible for emitting at least one event
+every 10 s; the platform is responsible for detecting the 20 s silence
+boundary and transitioning the job status.
+
+### Terminal Status Semantics (`JobStatus`)
+
+```typescript
+type JobStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'completed_with_errors'
+  | 'failed'
+  | 'stalled';
+```
+
+| Status | When set |
+|--------|----------|
+| `completed` | Job finished, `errors.length === 0` |
+| `completed_with_errors` | Job finished, `errors.length > 0` |
+| `failed` | A phase returned `status: 'failed'`; subsequent phases not run |
+| `stalled` | Platform-set; no heartbeat received for >20 s |
+
+**Invariant**: when `status === 'completed_with_errors'` the UI **must** display
+"Completed with N errors". The string "Completed successfully" must not appear
+when `errors.length > 0` (T5 §6.2b).
+
+---
+
+## Policy Record
+
+### Overview
+
+A `PolicyRecord` is created or replaced by `POST /api/policies`. It extends
+the previously documented request body with `rpoHours` (which drives the
+platform backup schedule) and an optional `jqlFilter` validated before storage.
+
+Type stubs: `src/workload/types/PolicyRecord.ts` — `PolicyRecord`,
+`PolicyRequest`, `JqlParseRequest`, `JqlParseResponse`.
+
+### PolicyRecord Shape
+
+```typescript
+interface PolicyRecord {
+  policyId:            string;           // UUID
+  connectionId:        string;
+  rpoHours:            number;           // Recovery Point Objective in hours
+  retentionDays:       number;
+  projectScope:        'all' | 'selected';
+  selectedProjectKeys: string[];         // empty when projectScope === 'all'
+  jqlFilter?:          string;           // validated JQL; absent when not configured
+  createdAt:           string;           // ISO-8601
+  updatedAt:           string;           // ISO-8601
+}
+```
+
+`rpoHours` is consumed by the platform scheduler to determine backup frequency.
+Phase 1 does not expose a custom backup window in the operator UI (Non-Goal),
+but the field is stored for platform-internal use (T4 §3).
+
+At most one `PolicyRecord` exists per `connectionId` at any time. A new
+`POST /api/policies` for an existing connection replaces the prior record
+(`updatedAt` is refreshed; `createdAt` is preserved).
+
+### jqlFilter Validation Flow
+
+When `PolicyRequest.jqlFilter` is present and non-empty, the server executes
+this validation sequence before writing the record:
+
+```
+1. POST /rest/api/3/jql/parse
+   Body: { "queries": ["<jqlFilter>"] }
+
+2. If response.queries[0].errors is non-empty:
+   → HTTP 400 { "error": "invalid_jql", "details": response.queries[0].errors }
+
+3. On success:
+   → Write PolicyRecord with the validated jqlFilter
+   → HTTP 201 PolicyRecord (as JSON)
+```
+
+**`JqlParseRequest`:**
+```json
+{ "queries": ["project = PROJ AND created >= -30d"] }
+```
+
+**`JqlParseResponse`** (success):
+```json
+{
+  "queries": [
+    { "query": "project = PROJ AND created >= -30d", "errors": [] }
+  ]
+}
+```
+
+**`JqlParseResponse`** (failure):
+```json
+{
+  "queries": [
+    { "query": "project = INVALID SYNTAX", "errors": ["Expecting operator but got 'SYNTAX'."] }
+  ]
+}
+```
+
+### Updated POST /api/policies Request Body
+
+The full request body (superset of the stub documented in the API Surface
+section below) is:
+
+```json
+{
+  "connectionId":        "550e8400-...",
+  "rpoHours":            24,
+  "retentionDays":       30,
+  "projectScope":        "all",
+  "selectedProjectKeys": [],
+  "jqlFilter":           "created >= -90d"
+}
+```
+
+`rpoHours` and `retentionDays` are required. `jqlFilter` and
+`selectedProjectKeys` are optional. Implementations must accept both bodies
+(with and without `rpoHours`/`jqlFilter`) for backwards compatibility during
+the transition sprint.
 
 ---
 
