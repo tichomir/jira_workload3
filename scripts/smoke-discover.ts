@@ -90,8 +90,9 @@ function createTestDb(): Database.Database {
 }
 
 // ---------------------------------------------------------------------------
-// Mock Atlassian project-search API
-// Returns 3 software/business projects + 1 service_desk project (JSM).
+// Mock Atlassian project-search API + field/context APIs
+// Returns 3 software/business projects + 1 service_desk project (JSM),
+// 2 system fields (skipped) and 2 custom fields with one context each.
 // ---------------------------------------------------------------------------
 
 type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
@@ -103,6 +104,22 @@ function makeMockAtlassianFetch(): FetchFn {
     { id: '10003', key: 'SMOKE3', name: 'Smoke Software 2', projectTypeKey: 'software' },
     { id: '10004', key: 'JSMPROJ', name: 'JSM Service Desk (deferred)', projectTypeKey: 'service_desk' },
   ];
+
+  const mockFields = [
+    { id: 'summary',          name: 'Summary',       custom: false },
+    { id: 'status',           name: 'Status',        custom: false },
+    { id: 'customfield_10016', name: 'Story Points', custom: true },
+    { id: 'customfield_10020', name: 'Sprint',       custom: true },
+  ];
+
+  const mockContextPage = {
+    startAt: 0,
+    maxResults: 50,
+    isLast: true,
+    values: [
+      { id: '1', name: 'Default Context', isGlobalContext: true, isAnyIssueType: true },
+    ],
+  };
 
   return async (url: string) => {
     if (url.includes('/rest/api/3/project/search')) {
@@ -116,6 +133,20 @@ function makeMockAtlassianFetch(): FetchFn {
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
+    }
+    // Field list endpoint
+    if (url.endsWith('/rest/api/3/field')) {
+      return new Response(JSON.stringify(mockFields), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    // Field context endpoint (custom fields only)
+    if (url.includes('/rest/api/3/field/') && url.includes('/context')) {
+      return new Response(JSON.stringify(mockContextPage), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
     }
     console.error(`[smoke-discover] unexpected fetch: ${url}`);
     return new Response('Not Found', { status: 404 });

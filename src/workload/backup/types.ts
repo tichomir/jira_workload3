@@ -23,6 +23,8 @@ export interface JqlSearchRequest {
   maxResults?: number;
   fields?: string[];
   expand?: string[];
+  /** Cursor token for nextPageToken-based pagination. Omit on the first page. */
+  nextPageToken?: string;
 }
 
 /** Paginated response from POST /rest/api/3/search/jql. */
@@ -31,6 +33,8 @@ export interface JqlSearchResponse {
   maxResults: number;
   total: number;
   issues: RawIssue[];
+  /** Cursor for the next page; absent on the final page. */
+  nextPageToken?: string;
 }
 
 /** Minimal Issue shape returned by the JQL search endpoint. */
@@ -94,6 +98,35 @@ export interface IJiraHttpClient {
    * @param attachmentId   Jira attachment ID.
    */
   downloadAttachment(cloudBaseUrl: string, attachmentId: string): Promise<AttachmentDownload>;
+
+  /**
+   * Enumerate all Issues matching a JQL query across all pages using
+   * POST /rest/api/3/search/jql with nextPageToken-based pagination.
+   *
+   * Termination condition (both checked per page):
+   *   issues.length === 0   — empty page; no further results.
+   *   issues.length < maxResults — partial page; this is the final page.
+   *
+   * The `total` field in the response is NEVER accessed or used for pagination.
+   * The deprecated GET /rest/api/3/search endpoint must not appear anywhere
+   * in backup-engine code (T2 §6 Constraint 6).
+   *
+   * Emits one structured log line per page:
+   *   [search] endpoint=search/jql project=<projectKey> page=<n> count=<n>
+   *
+   * @param cloudBaseUrl  Base URL for the site.
+   * @param projectKey    Jira project key — used only for structured logging.
+   * @param jql           JQL query string.
+   * @param fields        Field IDs to include in each Issue payload.
+   * @param opts          Optional: maxResults per page (default 100).
+   */
+  enumerateIssues(
+    cloudBaseUrl: string,
+    projectKey: string,
+    jql: string,
+    fields: string[],
+    opts?: { maxResults?: number }
+  ): Promise<RawIssue[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -177,6 +210,11 @@ export interface CaptureRunResult {
   itemCount: number;
   errorCount: number;
   /**
+   * Field contexts discovered during the CustomField phase.
+   * Empty array when the CustomField phase failed before completing.
+   */
+  fieldContexts: FieldContextRecord[];
+  /**
    * Set when any phase halts with status 'failed'.
    * Format: "<PhaseName> phase: <reason>".
    * Subsequent phases are not executed after a failure (T5 §5.2).
@@ -259,6 +297,31 @@ export interface JsmDeferredProject {
 }
 
 /**
+ * A single context entry returned by GET /rest/api/3/field/{id}/context.
+ * Source: T2 §6 Constraint 7, T3 §4.2.
+ */
+export interface FieldContext {
+  id: string;
+  name: string;
+  isGlobalContext: boolean;
+  isAnyIssueType: boolean;
+}
+
+/**
+ * Field context record persisted in the manifest for each custom field.
+ * System fields (custom: false) never produce a FieldContextRecord — they are
+ * skipped with a [field-context] skip log line and never passed to the context
+ * endpoint (T2 §6 Constraint 7).
+ */
+export interface FieldContextRecord {
+  fieldId: string;
+  fieldName: string;
+  /** Always true — system fields are never stored here. */
+  custom: true;
+  contexts: FieldContext[];
+}
+
+/**
  * Coverage invariant record — asserts that all system and custom fields were
  * captured for each backed-up Issue. Populated by the Issue capture phase.
  * Source: T3 §3.5.
@@ -307,6 +370,24 @@ export interface BackupManifest {
    */
   jsmDeferredProjects: JsmDeferredProject[];
   /**
+   * Custom field contexts discovered during the CustomField capture phase.
+   * Populated by discoverFieldContexts() — GET /rest/api/3/field/{id}/context
+   * is called only for fields where custom: true (T2 §6 Constraint 7, T3 §4.2).
+   * null when field context discovery has not yet run.
+   */
+  fieldContexts: FieldContextRecord[] | null;
+  /**
+   * Number of custom fields (custom: true) whose contexts were successfully
+   * captured during the Snapshot CustomField phase.
+   * null before snapshot runs; equals fieldContexts.length on success.
+   */
+  customFieldsCaptured: number | null;
+  /**
+   * Field IDs of custom fields that errored during context discovery.
+   * Empty array in the success case (T2 §6 Constraint 7, T3 §4.2).
+   */
+  customFieldsSkipped: string[];
+  /**
    * Populated after the Issue capture phase completes.
    * null when only discovery (not snapshot) has run.
    */
@@ -353,7 +434,16 @@ export interface AttachmentRecord {
   mimeType: string;
   /** File size in bytes. */
   size: number;
-  /** SHA-256 hex digest of the downloaded binary for integrity verification. */
+  /**
+   * Direct download URL from the Jira API (the `content` field on the raw
+   * attachment object). Populated by the assembler; used by the binary
+   * download step to fetch the attachment.
+   */
+  contentUrl?: string;
+  /**
+   * SHA-256 hex digest of the downloaded binary for integrity verification.
+   * Empty string ('') until the binary download step completes.
+   */
   contentHash: string;
   created: string;
   author: { accountId: string };

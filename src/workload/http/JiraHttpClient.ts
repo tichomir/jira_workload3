@@ -80,6 +80,46 @@ export class JiraHttpClient implements IJiraHttpClient {
     return response.json() as Promise<JqlSearchResponse>;
   }
 
+  async enumerateIssues(
+    cloudBaseUrl: string,
+    projectKey: string,
+    jql: string,
+    fields: string[],
+    opts: { maxResults?: number } = {}
+  ): Promise<RawIssue[]> {
+    const maxResults = opts.maxResults ?? 100;
+    const allIssues: RawIssue[] = [];
+    let page = 0;
+    let nextPageToken: string | undefined;
+
+    while (true) {
+      page++;
+      const body: JqlSearchRequest = {
+        jql,
+        maxResults,
+        fields,
+        ...(nextPageToken !== undefined ? { nextPageToken } : {}),
+      };
+
+      const response = await this.searchJql(cloudBaseUrl, body);
+      const { issues } = response;
+
+      console.log(
+        `[search] endpoint=search/jql project=${projectKey} page=${page} count=${issues.length}`
+      );
+
+      allIssues.push(...issues);
+
+      if (issues.length === 0 || issues.length < maxResults) {
+        break;
+      }
+
+      nextPageToken = response.nextPageToken;
+    }
+
+    return allIssues;
+  }
+
   async downloadAttachment(cloudBaseUrl: string, attachmentId: string): Promise<AttachmentDownload> {
     const url = `${cloudBaseUrl}/rest/api/3/attachment/content/${attachmentId}`;
     const response = await this._request(url, { method: 'GET' });

@@ -221,6 +221,250 @@ for each skipped field (T2 §6 Constraint 7, T3 §4.2).
 
 ---
 
+## Snapshot Orchestrator
+
+### Overview
+
+The Snapshot Orchestrator is the concrete implementation of
+`ICaptureOrchestrator` (`src/workload/backup/types.ts`). All Snapshot-phase-
+specific contracts live in `src/workload/snapshot/types.ts`.
+
+The module defines:
+
+- **`SnapshotPhase` enum** — the nine dependency-ordered capture phases as a
+  TypeScript `enum` (not a string-union type), enabling runtime iteration via
+  `Object.values(SnapshotPhase)` and exhaustive switch checking at compile time.
+- **`SNAPSHOT_PHASE_ORDER`** — the canonical, immutable phase sequence.
+- **`PhaseEmitBoundary` / `PHASE_EMIT_BOUNDARIES`** — per-phase emit and
+  persist checkpoints.
+- **`IssuePayload`** — the full Issue capture contract (coverage invariant).
+- **`SearchLogLine` / `FieldContextLogLine`** — structured-log line shapes.
+- **`PAGINATION_TERMINATION_CONTRACT`** — verbatim termination rule.
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `src/workload/snapshot/types.ts` | Snapshot-phase contracts: `SnapshotPhase` enum, `IssuePayload`, log-line shapes, pagination contract |
+| `src/workload/backup/types.ts` | Shared backup-engine contracts: `CapturePhase`, `ICaptureOrchestrator`, `BackupManifest`, `IssueRecord` |
+
+### Capture-Order Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant Orch as Orchestrator
+    participant API  as Jira REST API
+    participant DB   as Manifest Store
+
+    Note over Orch,DB: ── Context Nodes (captured before Protected Objects) ──
+
+    Orch->>API: GET /rest/api/3/issuetype
+    API-->>Orch: IssueType[]
+    Orch->>DB: persist IssueTypes
+    Orch->>Orch: emit progress (≤10 s interval)
+
+    Orch->>API: GET /rest/api/3/field
+    API-->>Orch: Field[] (custom + system mixed)
+    loop for each Field
+        alt custom: false  (system field)
+            Orch->>Orch: [field-context] skip field_id=X reason=system-field
+        else custom: true  (custom field)
+            Orch->>API: GET /rest/api/3/field/{id}/context
+            API-->>Orch: FieldContext[]
+            Orch->>Orch: [field-context] fetch field_id=X contextCount=N
+        end
+    end
+    Orch->>DB: persist CustomFields + FieldConfigurations
+    Orch->>Orch: emit progress
+
+    Orch->>API: GET /rest/api/3/workflow/search (paginated)
+    API-->>Orch: Workflow[]
+    Orch->>API: GET /rest/api/3/workflowscheme (paginated)
+    API-->>Orch: WorkflowScheme[]
+    Orch->>DB: persist Workflows + WorkflowSchemes
+    Orch->>Orch: emit progress
+
+    Note over Orch,DB: ── Protected Objects ──
+
+    Orch->>API: GET /rest/api/3/project/search (paginated)
+    API-->>Orch: Project[]
+    Orch->>DB: persist Projects (non-JSM) + jsmDeferredProjects (service_desk)
+    Orch->>Orch: emit progress
+
+    Orch->>API: GET /rest/agile/1.0/board (paginated)
+    API-->>Orch: Board[]
+    Orch->>DB: persist Boards
+    Orch->>Orch: emit progress
+
+    loop per Board (paginated)
+        Orch->>API: GET /rest/agile/1.0/board/{id}/sprint
+        API-->>Orch: Sprint[]
+    end
+    Orch->>DB: persist Sprints
+    Orch->>Orch: emit progress
+
+    loop until issues.length === 0 || issues.length < maxResults
+        Orch->>API: POST /rest/api/3/search/jql { jql, startAt, maxResults }
+        API-->>Orch: JqlSearchResponse { issues[], total }
+        Orch->>Orch: emit [search] log line
+        Orch->>DB: persist IssuePayload[] (incremental — one page at a time)
+        Orch->>Orch: emit progress
+    end
+```
+
+### SnapshotPhase Enum
+
+Defined in `src/workload/snapshot/types.ts` as a TypeScript `enum`. The nine
+phases in mandatory execution order:
+
+| Phase | Class | API path |
+|-------|-------|----------|
+| `IssueType` | Context node | `GET /rest/api/3/issuetype` |
+| `CustomField` | Context node | `GET /rest/api/3/field` |
+| `FieldConfiguration` | Context node | `GET /rest/api/3/field/{id}/context` (custom only) |
+| `Workflow` | Context node | `GET /rest/api/3/workflow/search` |
+| `WorkflowScheme` | Context node | `GET /rest/api/3/workflowscheme` |
+| `Project` | Protected object | `GET /rest/api/3/project/search` |
+| `Board` | Protected object | `GET /rest/agile/1.0/board` |
+| `Sprint` | Protected object | `GET /rest/agile/1.0/board/{id}/sprint` |
+| `Issue` | Protected object | `POST /rest/api/3/search/jql` |
+
+Context nodes are always captured before Protected Objects in every backup job
+(T1 §1, T3 §3.4).
+
+### Per-Phase Emit/Persist Boundaries
+
+All phases share these invariants (defined in `PHASE_EMIT_BOUNDARIES`):
+
+- `maxEmitIntervalSeconds: 10` — a progress event must be emitted at most every
+  10 s. A gap of >20 s surfaces a **stalled** alert in the UI (T5 §6.2).
+- `blocksNextPhase: true` — a phase must complete before the next phase begins.
+  All phases are sequential; no concurrent phase execution is permitted.
+
+| Phase | `persistsAtPhaseEnd` | Notes |
+|-------|----------------------|-------|
+| `IssueType` | `true` | Single GET; all items persisted at phase end |
+| `CustomField` | `true` | Paginated GET; all items persisted at phase end |
+| `FieldConfiguration` | `true` | Per-field GET (custom only); persisted at phase end |
+| `Workflow` | `true` | Paginated GET; persisted at phase end |
+| `WorkflowScheme` | `true` | Paginated GET; persisted at phase end |
+| `Project` | `true` | Paginated GET; persisted at phase end |
+| `Board` | `true` | Paginated GET; persisted at phase end |
+| `Sprint` | `true` | Per-board paginated GET; persisted at phase end |
+| `Issue` | **`false`** | Paginated JQL; **persisted incrementally** per page |
+
+### Pagination Termination Contract
+
+**Verbatim rule** (source: T2 §6 Constraint 6, CLAUDE.md Goals §8):
+
+> Pagination for `POST /rest/api/3/search/jql` terminates when:
+>
+> ```
+> issues.length === 0 || issues.length < maxResults
+> ```
+>
+> The deprecated `GET /rest/api/3/search` endpoint must not appear anywhere in
+> backup-engine code.
+
+The paginator checks the condition **after** each page is received.
+`issues.length < maxResults` catches partial (final) pages;
+`issues.length === 0` catches the edge case where total is an exact multiple of
+`maxResults`.
+
+The contract is captured verbatim as `PAGINATION_TERMINATION_CONTRACT` in
+`src/workload/snapshot/types.ts`.
+
+### Structured-Log Line Shapes
+
+#### `[search]` lines
+
+Emitted **once per pagination request** to `POST /rest/api/3/search/jql`.
+
+**Verbatim format:**
+
+```
+[search] project=<projectKey> jql="<jql>" startAt=<startAt> maxResults=<maxResults> returned=<returned> total=<total>
+```
+
+**Example — 3-page run, project PROJ, 243 issues, maxResults=100:**
+
+```
+[search] project=PROJ jql="project = PROJ ORDER BY created ASC" startAt=0   maxResults=100 returned=100 total=243
+[search] project=PROJ jql="project = PROJ ORDER BY created ASC" startAt=100 maxResults=100 returned=100 total=243
+[search] project=PROJ jql="project = PROJ ORDER BY created ASC" startAt=200 maxResults=100 returned=43  total=243
+```
+
+Pagination terminates after the third request because `returned(43) < maxResults(100)`.
+
+Typed as `SearchLogLine` in `src/workload/snapshot/types.ts`.
+
+#### `[field-context]` lines
+
+Emitted **once per field** during the CustomField / FieldConfiguration phase.
+
+**Verbatim format — skip (system field, `custom: false`):**
+
+```
+[field-context] skip field_id=<id> reason=system-field
+```
+
+**Verbatim format — fetch (custom field, `custom: true`):**
+
+```
+[field-context] fetch field_id=<id> contextCount=<n>
+```
+
+**Constraint**: `GET /rest/api/3/field/{id}/context` is called **only** for
+fields where `custom: true`. Every system field (`custom: false`) always
+produces a skip line — it is never passed to the context endpoint
+(T2 §6 Constraint 7, T3 §4.2).
+
+Typed as `FieldContextLogLine` (discriminated union) in
+`src/workload/snapshot/types.ts`.
+
+### IssuePayload Interface
+
+`IssuePayload` (defined in `src/workload/snapshot/types.ts`) is the Snapshot-
+phase contract for a fully captured Issue. It is the in-flight form produced
+by the orchestrator; `IssueRecord` (`src/workload/backup/types.ts`) is the
+persisted DB artifact that additionally carries `backupPointId` and `capturedAt`.
+
+**Coverage invariant** (T3 §3.5):
+
+- `customFieldValues` must contain **every** custom field (`custom: true`)
+  returned by the API for this Issue.
+- No entry may be dropped — the map must not omit any field.
+- System fields (`custom: false`) must **not** appear in `customFieldValues`.
+
+**Full field set** (T3 §3.3):
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | `string` | Atlassian numeric Issue ID |
+| `key` | `string` | e.g. "PROJ-42" |
+| `projectId` | `string` | Atlassian numeric project ID |
+| `summary` | `string` | System field |
+| `description` | `AdfNode \| null` | ADF document |
+| `issueType` | `{id, name}` | System field |
+| `status` | `{id, name}` | System field |
+| `priority` | `{id, name} \| null` | System field |
+| `assignee` | `{accountId, displayName} \| null` | System field |
+| `reporter` | `{accountId, displayName} \| null` | System field |
+| `created` | `string` | ISO-8601 |
+| `updated` | `string` | ISO-8601 |
+| `resolutionDate` | `string \| null` | ISO-8601 |
+| `labels` | `string[]` | System field |
+| `customFieldValues` | `Record<string, unknown>` | All custom fields; no omissions |
+| `comments` | `IssueComment[]` | ADF body + author + timestamps |
+| `issueLinks` | `IssueLink[]` | All link types, both directions |
+| `subtaskKeys` | `string[]` | Direct child Issue keys |
+| `sprintIds` | `string[]` | Sprint membership (can be multiple) |
+| `watcherAccountIds` | `string[]` | Issue watchers |
+| `worklogs` | `WorklogEntry[]` | Worklog entries |
+| `attachments` | `AttachmentRecord[]` | Attachment refs (binary stored separately) |
+
+---
+
 ## API Surface (T0 §2)
 
 The Platform Stub exposes four endpoint groups. All paths are mounted under

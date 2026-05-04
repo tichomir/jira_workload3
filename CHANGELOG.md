@@ -4,6 +4,71 @@ All notable changes are documented here by sprint.
 
 ---
 
+## [Sprint 2 — Phase 2] — 2026-05-04 — Issue Enumeration, Custom Field Context & Capture Order
+
+### Added
+
+#### Custom field context discovery — `src/workload/backup/discoverFieldContexts.ts`
+- `discoverFieldContexts(client, cloudBaseUrl)` — calls `GET /rest/api/3/field` once
+  to list all fields, then for each field where `custom === true` calls
+  `GET /rest/api/3/field/{id}/context` (paginated via `startAt` / `isLast`).
+- System fields (`custom === false`) are never passed to the context endpoint; each
+  emits a `[field-context] skip field_id=<id> reason=system-field` log line.
+- Custom fields emit `[field-context] fetch field_id=<id> contextCount=<n>` after all
+  context pages are collected.
+- Results are persisted inside `manifestJson` in `backup_manifests` (T2 §6 Constraint 7,
+  T3 §4.2).
+
+#### Issue payload assembler — `src/workload/snapshot/assembleIssuePayload.ts`
+- `assembleIssuePayload(raw, allCustomFieldIds)` — normalizes a raw
+  `POST /rest/api/3/search/jql` response into an `IssuePayload` satisfying the
+  coverage invariant (T3 §3.3, §3.5).
+- Full payload: system fields, `customFieldValues` map (all custom field IDs present,
+  `null` when absent), ADF comments, all issue links (inward and outward), subtask keys,
+  sprint IDs, watcher accountIds, worklogs, and attachment refs.
+- `assertCoverageInvariant(payload, allCustomFieldIds)` — throws a diagnostic when
+  `Object.keys(customFieldValues).length !== allCustomFieldIds.length`.
+- Sprint IDs extracted by scanning all custom field values for sprint-shaped objects
+  (`{ id, state: 'active' | 'closed' | 'future' }`), avoiding a hardcoded
+  `customfield_10020` assumption.
+
+#### Capture-order orchestrator — `src/workload/snapshot/CaptureOrchestrator.ts`
+- `CaptureOrchestrator.runCapture(options, onProgress)` — executes snapshot phases in
+  dependency order: `CustomField → Project → Issue` (T1 §1, T3 §3.4).
+- A failure in `CustomField` phase halts execution and surfaces a named `phaseDiagnostic`
+  before any Project or Issue capture begins.
+- Issue enumeration uses `enumerateIssues()` backed by `POST /rest/api/3/search/jql`;
+  pagination terminates on `issues.length === 0` or `issues.length < maxResults`.
+- Progress events emitted per project and on a 9-second time-based heartbeat, satisfying
+  the ≤10 s contract (T5 §6.2). Jobs silent for >20 s surface a "stalled" alert.
+- `"Completed with N errors"` semantics: `issuePhase.status === 'partial'` when any
+  issue fails; full error count in `CaptureRunResult.errorCount` (T5 §6.2b).
+
+#### Issue enumeration — `src/workload/http/JiraHttpClient.ts`
+- `enumerateIssues(cloudBaseUrl, projectKey, jql, fields, opts)` — paginates
+  `POST /rest/api/3/search/jql` using `nextPageToken`; terminates on
+  `issues.length === 0` or `issues.length < maxResults`.
+- Emits `[search] endpoint=search/jql project=<key> page=<n> count=<n>` per page
+  for operator-observable progress.
+
+#### `JiraWorkload.snapshot()` — `src/workload/JiraWorkload.ts`
+- Loads the manifest from `backup_manifests`, constructs a `CaptureOrchestrator`,
+  runs the full capture lifecycle, and persists the updated manifest
+  (`fieldContexts`, `customFieldsCaptured`, `coverageInvariant`) back to the DB.
+- Returns `{ backupPointId, completedAt, itemCount, errorCount }` to the platform layer.
+
+### Forbidden endpoint
+- `GET /rest/api/3/search` is explicitly forbidden and not used anywhere in the
+  codebase. All Issue discovery and backup uses `POST /rest/api/3/search/jql`
+  exclusively. The `check:http-guard` script (`scripts/check-http-guard.sh`) enforces
+  this invariant (T2 §6 Constraint 6).
+
+### Not yet exposed
+- `/api/snapshot` HTTP route — Sprint 3 deliverable. Issue enumeration and capture
+  logic are fully implemented and verified via unit tests.
+
+---
+
 ## [Sprint 1 — Phase 2] — 2026-05-04 — Backup Engine Foundations: HTTP Client, Project Discovery & JSM Detection
 
 ### Added

@@ -4,7 +4,7 @@ _Generated: 2026-05-04 | Author: qa-engineer-persona_
 _Scope: DEMO.md, INSTALL.md, CHANGELOG.md, ARCHITECTURE.md_
 _Sprint focus: Sprint 1 Phase 2 additions — Backup Engine Foundations, Project Discovery, JSM Detection, Discover route, smoke-discover probe_
 
-> **Filename note:** The task template referenced `sprint4.md`, which already exists and contains Sprint 2 Platform Stub QA content. `sprint5.md` was created by the DevOps carry-forward task. This report is correctly sequenced as `sprint6.md`.
+> **Filename note:** The task template referenced `doc-grounding-report-sprint4.md`, which already exists and contains Sprint 2 Platform Stub QA content. `doc-grounding-report-sprint5.md` was created by the DevOps carry-forward task. This report is correctly sequenced as `doc-grounding-report-sprint6.md`.
 
 ---
 
@@ -110,7 +110,7 @@ _Sprint focus: Sprint 1 Phase 2 additions — Backup Engine Foundations, Project
 | `POST https://auth.atlassian.com/oauth/token` | URL | Yes | `src/workload/http/JiraHttpClient.ts:10` |
 | `[discover] phase=project` log line | Log format | Yes | verified in smoke probe output (see §Smoke Probe) |
 | `[discover] jsm-deferred` log line | Log format | Yes | verified in smoke probe output (see §Smoke Probe) |
-| `[auth-refresh]` log line | Log format | Yes | `src/workload/http/JiraHttpClient.ts:184–196`; emitted on HTTP 401 → token refresh |
+| `[auth-refresh]` log line | Log format | Yes | `src/workload/http/JiraHttpClient.ts:224–234`; emitted on HTTP 401 → token refresh |
 | `npx tsx scripts/smoke-discover.ts` | Command | Yes | `scripts/smoke-discover.ts` |
 
 ### Pre-existing references (carry-forward, all confirmed present)

@@ -12,6 +12,8 @@ import { randomUUID } from 'crypto';
 import { getDb } from '../db/database.js';
 import { JiraHttpClient } from './http/JiraHttpClient.js';
 import { discoverProjects } from './backup/discoverProjects.js';
+import { discoverFieldContexts } from './backup/discoverFieldContexts.js';
+import { CaptureOrchestrator } from './snapshot/CaptureOrchestrator.js';
 import type {
   PlatformWorkloadInterface,
   DiscoverPolicy,
@@ -22,7 +24,7 @@ import type {
   RestoreOptions,
 } from '../platform_workload_iface.js';
 import type { Connection } from '../types/connection.js';
-import type { BackupManifest } from './backup/types.js';
+import type { BackupManifest, CaptureProgressEvent } from './backup/types.js';
 
 // ---------------------------------------------------------------------------
 // Typed error surfaces
@@ -79,6 +81,8 @@ export class JiraWorkload implements PlatformWorkloadInterface {
       policy.selectedProjectKeys
     );
 
+    const fieldContexts = await discoverFieldContexts(client, cloudBaseUrl);
+
     const manifestId = randomUUID();
     const now = new Date().toISOString();
 
@@ -90,6 +94,9 @@ export class JiraWorkload implements PlatformWorkloadInterface {
       selectedProjectKeys: policy.selectedProjectKeys ?? [],
       projects,
       jsmDeferredProjects,
+      fieldContexts,
+      customFieldsCaptured: null,
+      customFieldsSkipped: [],
       coverageInvariant: null,
     };
 
@@ -107,11 +114,77 @@ export class JiraWorkload implements PlatformWorkloadInterface {
   }
 
   // -------------------------------------------------------------------------
-  // snapshot — Phase 2 deliverable
+  // snapshot
   // -------------------------------------------------------------------------
 
-  async snapshot(_connection: Connection, _manifestId: string): Promise<SnapshotResult> {
-    throw new Error('snapshot() not yet implemented — Phase 2 deliverable');
+  async snapshot(connection: Connection, manifestId: string): Promise<SnapshotResult> {
+    const db = getDb();
+
+    const row = db
+      .prepare('SELECT manifestJson FROM backup_manifests WHERE id = ?')
+      .get(manifestId) as { manifestJson: string } | undefined;
+
+    if (!row) {
+      throw new Error(`[snapshot] manifest not found: manifestId=${manifestId}`);
+    }
+
+    const manifest: BackupManifest = JSON.parse(row.manifestJson);
+    const cloudBaseUrl = `https://api.atlassian.com/ex/jira/${connection.cloudId}`;
+    const client = JiraHttpClient.forConnection(connection.connectionId);
+    const orchestrator = new CaptureOrchestrator(client, manifest);
+
+    const progressEvents: CaptureProgressEvent[] = [];
+
+    const captureResult = await orchestrator.runCapture(
+      {
+        connectionId: connection.connectionId,
+        cloudId: connection.cloudId,
+        cloudBaseUrl,
+        manifestId,
+        projectScope: manifest.projectScope,
+        selectedProjectKeys: manifest.selectedProjectKeys,
+      },
+      (event) => {
+        progressEvents.push(event);
+        console.log(
+          `[snapshot-progress] phase=${event.phase}` +
+            ` captured=${event.itemsCaptured}` +
+            ` total=${event.itemsTotal ?? 'unknown'}` +
+            ` elapsedMs=${event.elapsedMs}`
+        );
+      }
+    );
+
+    const customFieldPhase = captureResult.phaseResults.find(
+      (p) => p.phase === 'CustomField'
+    );
+    const issuePhase = captureResult.phaseResults.find((p) => p.phase === 'Issue');
+
+    const updatedManifest: BackupManifest = {
+      ...manifest,
+      fieldContexts: captureResult.fieldContexts,
+      customFieldsCaptured: customFieldPhase?.itemCount ?? 0,
+      customFieldsSkipped: [],
+      coverageInvariant: {
+        totalIssuesEnumerated:
+          (issuePhase?.itemCount ?? 0) + (issuePhase?.errorCount ?? 0),
+        issuesFullyCaptured: issuePhase?.itemCount ?? 0,
+        issuesWithErrors: issuePhase?.errorCount ?? 0,
+        systemFieldsSkipped: [],
+      },
+    };
+
+    db.prepare('UPDATE backup_manifests SET manifestJson = ? WHERE id = ?').run(
+      JSON.stringify(updatedManifest),
+      manifestId
+    );
+
+    return {
+      backupPointId: manifestId,
+      completedAt: captureResult.completedAt,
+      itemCount: captureResult.itemCount,
+      errorCount: captureResult.errorCount,
+    };
   }
 
   // -------------------------------------------------------------------------

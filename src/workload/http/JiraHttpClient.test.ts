@@ -309,3 +309,200 @@ describe('JiraHttpClient (workload) — IJiraHttpClient surface', () => {
     expect(calledUrl).toBe(`${CLOUD_BASE}/rest/api/3/attachment/content/att-001`);
   });
 });
+
+// ---------------------------------------------------------------------------
+// enumerateIssues — nextPageToken-based pagination with length termination
+// ---------------------------------------------------------------------------
+
+describe('JiraHttpClient (workload) — enumerateIssues', () => {
+  let db: Database.Database;
+  let logs: string[];
+
+  beforeEach(() => {
+    db = createTestDb();
+    _setDbForTesting(db);
+    JiraHttpClient._clearInstances();
+    logs = [];
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      logs.push(args.map(String).join(' '));
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    _resetDb();
+    JiraHttpClient._clearInstances();
+  });
+
+  function makeIssue(key: string) {
+    return { id: key, key, fields: { summary: key } };
+  }
+
+  it('terminates on partial-page response and returns all issues', async () => {
+    // Page 1: 3 issues (full page, maxResults=3) → nextPageToken present
+    // Page 2: 2 issues (partial page, 2 < 3) → terminate
+    const page1Issues = [makeIssue('PROJ-1'), makeIssue('PROJ-2'), makeIssue('PROJ-3')];
+    const page2Issues = [makeIssue('PROJ-4'), makeIssue('PROJ-5')];
+
+    let callCount = 0;
+    const mockFetch = vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
+      if (url.includes('/rest/api/3/search/jql')) {
+        callCount++;
+        const body = JSON.parse((init?.body as string) ?? '{}');
+        const issues = body.nextPageToken ? page2Issues : page1Issues;
+        return new Response(
+          JSON.stringify({
+            startAt: 0,
+            maxResults: 3,
+            total: 5,
+            issues,
+            ...(callCount === 1 ? { nextPageToken: 'cursor-page-2' } : {}),
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response('Not found', { status: 404 });
+    });
+
+    const client = JiraHttpClient._createForTesting(TEST_CONN_ID, mockFetch);
+    const result = await client.enumerateIssues(CLOUD_BASE, 'PROJ', 'project = PROJ', ['summary'], { maxResults: 3 });
+
+    expect(result).toHaveLength(5);
+    expect(result.map(i => i.key)).toEqual(['PROJ-1', 'PROJ-2', 'PROJ-3', 'PROJ-4', 'PROJ-5']);
+    expect(callCount).toBe(2);
+  });
+
+  it('terminates on empty-page response', async () => {
+    const page1Issues = [makeIssue('X-1'), makeIssue('X-2'), makeIssue('X-3')];
+    let callCount = 0;
+    const mockFetch = vi.fn(async (url: string, _init?: RequestInit): Promise<Response> => {
+      if (url.includes('/rest/api/3/search/jql')) {
+        callCount++;
+        const issues = callCount === 1 ? page1Issues : [];
+        return new Response(
+          JSON.stringify({ startAt: 0, maxResults: 3, total: 3, issues,
+            ...(callCount === 1 ? { nextPageToken: 'tok-2' } : {}) }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response('Not found', { status: 404 });
+    });
+
+    const client = JiraHttpClient._createForTesting(TEST_CONN_ID, mockFetch);
+    const result = await client.enumerateIssues(CLOUD_BASE, 'X', 'project = X', ['summary'], { maxResults: 3 });
+
+    expect(result).toHaveLength(3);
+    expect(callCount).toBe(2);
+  });
+
+  it('emits [search] endpoint=search/jql log line on every page', async () => {
+    const issues3 = [makeIssue('A-1'), makeIssue('A-2'), makeIssue('A-3')];
+    const issues1 = [makeIssue('A-4')];
+    let callCount = 0;
+    const mockFetch = vi.fn(async (url: string, _init?: RequestInit): Promise<Response> => {
+      if (url.includes('/rest/api/3/search/jql')) {
+        callCount++;
+        const issues = callCount === 1 ? issues3 : issues1;
+        return new Response(
+          JSON.stringify({ startAt: 0, maxResults: 3, total: 4, issues,
+            ...(callCount === 1 ? { nextPageToken: 'tok' } : {}) }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response('Not found', { status: 404 });
+    });
+
+    const client = JiraHttpClient._createForTesting(TEST_CONN_ID, mockFetch);
+    await client.enumerateIssues(CLOUD_BASE, 'ALPHA', 'project = ALPHA', ['summary'], { maxResults: 3 });
+
+    const searchLogs = logs.filter(l => l.includes('[search]'));
+    expect(searchLogs).toHaveLength(2);
+    expect(searchLogs[0]).toContain('endpoint=search/jql');
+    expect(searchLogs[0]).toContain('project=ALPHA');
+    expect(searchLogs[0]).toContain('page=1');
+    expect(searchLogs[0]).toContain('count=3');
+    expect(searchLogs[1]).toContain('page=2');
+    expect(searchLogs[1]).toContain('count=1');
+  });
+
+  it('POSTs to /rest/api/3/search/jql and not to any other search endpoint', async () => {
+    const mockFetch = vi.fn(async (_url: string, _init?: RequestInit): Promise<Response> =>
+      new Response(
+        JSON.stringify({ startAt: 0, maxResults: 50, total: 0, issues: [] }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+
+    const client = JiraHttpClient._createForTesting(TEST_CONN_ID, mockFetch);
+    await client.enumerateIssues(CLOUD_BASE, 'MYPROJ', 'project = MYPROJ', []);
+
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const [calledUrl, calledInit] = mockFetch.mock.calls[0];
+    expect(calledUrl).toBe(`${CLOUD_BASE}/rest/api/3/search/jql`);
+    expect((calledInit as RequestInit).method).toBe('POST');
+  });
+
+  it('never reads the total field — pagination is length-only', async () => {
+    // Provide a deliberately wrong total to confirm it is never used for termination.
+    const mockFetch = vi.fn(async (_url: string, _init?: RequestInit): Promise<Response> =>
+      new Response(
+        JSON.stringify({ startAt: 0, maxResults: 50, total: 9999, issues: [makeIssue('Z-1')] }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+
+    const client = JiraHttpClient._createForTesting(TEST_CONN_ID, mockFetch);
+    // maxResults=50; page returns 1 issue → 1 < 50, so must stop after 1 page
+    const result = await client.enumerateIssues(CLOUD_BASE, 'Z', 'project = Z', [], { maxResults: 50 });
+
+    expect(result).toHaveLength(1);
+    expect(mockFetch).toHaveBeenCalledOnce();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Deprecated-endpoint grep guard
+// ---------------------------------------------------------------------------
+
+describe('deprecated endpoint guard', () => {
+  it('src/ contains no references to /rest/api/3/search without /jql suffix', () => {
+    const { spawnSync } = require('child_process') as typeof import('child_process');
+    const cwd = new URL('../../../', import.meta.url).pathname;
+
+    // First grep: find any line matching /rest/api/3/search in TypeScript sources
+    const first = spawnSync(
+      'grep',
+      ['-rn', '--include=*.ts', '--include=*.tsx', '/rest/api/3/search', 'src/'],
+      { encoding: 'utf-8', cwd }
+    );
+    // Exit 1 means no matches at all — definitely clean
+    if (first.status === 1) return;
+
+    // Filter: keep only lines that are actual code references to the forbidden endpoint
+    const violations = (first.stdout as string)
+      .split('\n')
+      .filter(line => {
+        if (!line.includes('/rest/api/3/search')) return false;
+        // Permitted endpoint: /rest/api/3/search/jql
+        if (line.includes('/rest/api/3/search/jql')) return false;
+        // Skip this test file (it necessarily references the pattern)
+        if (line.includes('JiraHttpClient.test.ts')) return false;
+        // Skip type-definition files — they document constraints but never call HTTP
+        if (line.match(/types\.ts:/)) return false;
+        // Skip JSDoc and single-line comment lines
+        // grep output format: filepath:linenum:content
+        const contentStart = line.indexOf(':', line.indexOf(':') + 1) + 1;
+        const code = line.slice(contentStart).trimStart();
+        if (code.startsWith('*') || code.startsWith('//')) return false;
+        return true;
+      })
+      .join('\n')
+      .trim();
+
+    if (violations) {
+      throw new Error(
+        `Deprecated /rest/api/3/search endpoint found in src/:\n${violations}`
+      );
+    }
+  });
+});

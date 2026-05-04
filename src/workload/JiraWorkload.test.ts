@@ -109,9 +109,12 @@ describe('JiraWorkload.discover() — happy path', () => {
       makeProject(4, 'service_desk'),
     ];
 
-    const mockFetch = vi.fn(async () =>
-      new Response(mockPage(projects), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    );
+    const mockFetch = vi.fn(async (url: string) => {
+      if (url.includes('/rest/api/3/field')) {
+        return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(mockPage(projects), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
 
     JiraHttpClient._createForTesting(TEST_CONN_ID, mockFetch);
 
@@ -127,9 +130,12 @@ describe('JiraWorkload.discover() — happy path', () => {
   it('persists a backup_manifests row with full manifestJson', async () => {
     const projects = [makeProject(1, 'software'), makeProject(2, 'software')];
 
-    const mockFetch = vi.fn(async () =>
-      new Response(mockPage(projects), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    );
+    const mockFetch = vi.fn(async (url: string) => {
+      if (url.includes('/rest/api/3/field')) {
+        return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(mockPage(projects), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
 
     JiraHttpClient._createForTesting(TEST_CONN_ID, mockFetch);
 
@@ -160,9 +166,12 @@ describe('JiraWorkload.discover() — happy path', () => {
   it('manifest row id matches returned backupPointId', async () => {
     const projects = [makeProject(1, 'software')];
 
-    const mockFetch = vi.fn(async () =>
-      new Response(mockPage(projects), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    );
+    const mockFetch = vi.fn(async (url: string) => {
+      if (url.includes('/rest/api/3/field')) {
+        return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(mockPage(projects), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
 
     JiraHttpClient._createForTesting(TEST_CONN_ID, mockFetch);
 
@@ -180,9 +189,12 @@ describe('JiraWorkload.discover() — happy path', () => {
       makeProject(3, 'business'),  // JP3
     ];
 
-    const mockFetch = vi.fn(async () =>
-      new Response(mockPage(projects), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    );
+    const mockFetch = vi.fn(async (url: string) => {
+      if (url.includes('/rest/api/3/field')) {
+        return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(mockPage(projects), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
 
     JiraHttpClient._createForTesting(TEST_CONN_ID, mockFetch);
 
@@ -208,6 +220,9 @@ describe('JiraWorkload.discover() — happy path', () => {
 
     const mockFetch = vi.fn(async (url: string) => {
       fetchedUrls.push(url);
+      if (url.includes('/rest/api/3/field')) {
+        return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
       return new Response(mockPage(projects), { status: 200, headers: { 'Content-Type': 'application/json' } });
     });
 

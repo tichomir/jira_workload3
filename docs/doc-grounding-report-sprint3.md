@@ -48,9 +48,9 @@ Fixed by renaming the `process.env` key to `OAUTH_REDIRECT_URI` in both files.
 | `npm run server` | Script | Yes | `package.json` → `tsx src/server.ts` |
 | `npm run dev` | Script | Yes | `package.json` → `vite` |
 | `ATLASSIAN_CLIENT_ID` | Env var | Yes | `.env.example`, `src/oauth/authorize.ts:63` |
-| `ATLASSIAN_CLIENT_SECRET` | Env var | Yes | `.env.example`, `src/http/JiraHttpClient.ts` |
+| `ATLASSIAN_CLIENT_SECRET` | Env var | Yes | `.env.example` (not read from `process.env` in source; stored in DB via manual-connection path) |
 | `OAUTH_REDIRECT_URI` | Env var | Yes | `.env.example`; **fixed** — code now reads `OAUTH_REDIRECT_URI` (was `ATLASSIAN_REDIRECT_URI`) |
-| `PORT` | Env var | Yes | `.env.example`, `src/server.ts:7` |
+| `PORT` | Env var | Yes | `.env.example`, `src/server.ts:11` |
 | `/api/oauth/callback` | Route | Yes | `src/routes/oauth.ts:8` + mount `app.use('/api/oauth', ...)` in `server.ts` |
 
 ---
@@ -66,7 +66,7 @@ Fixed by renaming the `process.env` key to `OAUTH_REDIRECT_URI` in both files.
 | `https://api.atlassian.com/oauth/token/accessible-resources` | URL | Yes | `src/oauth/tokenExchange.ts:6` constant |
 | `/api/oauth/callback` | Route | Yes | `src/routes/oauth.ts:8` |
 | `http://localhost:3000/api/connections/${CONNECTION_ID}/probes` | Route | Yes | `src/routes/connections.ts:112` |
-| `PORT` | Env var | Yes | `.env.example`, `src/server.ts:7` |
+| `PORT` | Env var | Yes | `.env.example`, `src/server.ts:11` |
 | Smoke probe — no `jq` dependency | Script | Yes | `grep -c jq` in bash code block = **0**; single occurrence in full file is prose negation ("does **not** require `jq`") |
 
 ---

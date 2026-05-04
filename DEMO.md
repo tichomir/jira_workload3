@@ -193,6 +193,105 @@ Each deferred entry has the form:
 
 ---
 
+## Custom Field Context Discovery
+
+After connecting and discovering projects, the backup engine enumerates field
+contexts for all custom fields on the site as part of `JiraWorkload.discover()`.
+
+### How it works
+
+1. Calls `GET /rest/api/3/field` once to list every field on the site.
+2. For each field where `custom === true`: calls `GET /rest/api/3/field/{id}/context`
+   (paginated via `startAt` / `isLast`), collects all context records, and logs:
+   ```
+   [field-context] fetch field_id=customfield_10016 contextCount=1
+   ```
+3. For every system field (`custom === false`) the context endpoint is **never
+   called**. A skip log line is emitted instead:
+   ```
+   [field-context] skip field_id=summary reason=system-field
+   [field-context] skip field_id=status reason=system-field
+   [field-context] skip field_id=priority reason=system-field
+   ```
+
+Field context results are persisted inside the `manifestJson` column of
+`backup_manifests` alongside project records from the discover step.
+
+### Observe field-context logs during a discover run
+
+Trigger a discover run (see "Discover Projects" above) and watch server output:
+
+```
+[field-context] skip field_id=summary reason=system-field
+[field-context] skip field_id=description reason=system-field
+[field-context] fetch field_id=customfield_10016 contextCount=1
+[field-context] fetch field_id=customfield_10020 contextCount=1
+```
+
+The absence of any `[field-context]` call containing a system field ID
+confirms Constraint 7 (T2 §6) is enforced.
+
+---
+
+## Issue Enumeration (Capture Orchestrator)
+
+The capture orchestrator (`CaptureOrchestrator`) executes snapshot phases in
+dependency order: **CustomField → Project → Issue**.
+
+Issue enumeration uses `POST /rest/api/3/search/jql` exclusively.
+The deprecated `GET /rest/api/3/search` endpoint is **forbidden** — the
+`check:http-guard` script enforces this at every CI run.
+
+### Phase log output
+
+During a snapshot run, each phase emits structured log lines and progress events:
+
+```
+[snapshot-progress] phase=CustomField captured=12 total=12 elapsedMs=340
+[snapshot-progress] phase=Project captured=4 total=4 elapsedMs=345
+[search] endpoint=search/jql project=MYPROJ page=1 count=100
+[search] endpoint=search/jql project=MYPROJ page=2 count=37
+[snapshot] project=MYPROJ issues=137 captured=137 errored=0
+[snapshot-progress] phase=Issue captured=137 total=unknown elapsedMs=4800
+[snapshot-progress] phase=Issue captured=137 total=137 elapsedMs=4850
+```
+
+Progress events are emitted per project and on a 9-second time-based heartbeat,
+satisfying the ≤10 s contract (T5 §6.2). A job silent for >20 s surfaces a
+"stalled" alert in the UI.
+
+### Pagination termination
+
+`enumerateIssues` paginates `POST /rest/api/3/search/jql` using `nextPageToken`
+and terminates when:
+- `issues.length === 0`, **or**
+- `issues.length < maxResults`
+
+### Coverage invariant
+
+Every issue captured satisfies the coverage invariant: all custom field IDs
+from the `CustomField` phase appear as keys in `customFieldValues` — even when
+the field has no value on this issue (stored as `null`). A violation throws a
+diagnostic and increments the error count.
+
+A backup that completes with per-item errors displays **"Completed with N
+errors"** rather than "Completed successfully." The error count is visible in
+the `coverageInvariant` block of the manifest:
+
+```bash
+BACKUP_POINT_ID=<backupPointId-from-discover-response>
+sqlite3 data/jira_workload.db \
+  "SELECT json_extract(manifestJson, '$.coverageInvariant') FROM backup_manifests WHERE id = '${BACKUP_POINT_ID}';"
+```
+
+### Snapshot HTTP endpoint — Phase 3 deliverable
+
+The `/api/snapshot` HTTP route is not yet exposed in this sprint. Issue
+enumeration and capture logic are fully implemented and verified via unit tests;
+the HTTP surface is a Sprint 3 deliverable.
+
+---
+
 ## Smoke probes (machine-readable)
 
 Each block below is a self-contained POSIX shell script. Run them in order
@@ -396,4 +495,33 @@ npx tsx scripts/smoke-discover.ts \
 
 echo ""
 echo "All discover-flow smoke checks passed."
+```
+
+### Probe 5 — field-context + issue-enumeration unit tests
+
+```bash
+#!/usr/bin/env bash
+# field-context + issue-enumeration unit-test probe
+# Verifies custom field context discovery, issue payload assembly, and the
+# capture orchestrator against acceptance criteria from Sprint 2 (Phase 2).
+# No running server or live credentials required.
+set -euo pipefail
+
+echo "==> [1/3] Custom field context discovery unit tests"
+npx vitest run src/workload/backup/discoverFieldContexts.test.ts \
+  && echo "PASS: field-context tests passed" \
+  || { echo "FAIL: field-context tests failed"; exit 1; }
+
+echo "==> [2/3] Issue payload assembler unit tests"
+npx vitest run src/workload/snapshot/assembleIssuePayload.test.ts \
+  && echo "PASS: assembleIssuePayload tests passed" \
+  || { echo "FAIL: assembleIssuePayload tests failed"; exit 1; }
+
+echo "==> [3/3] Capture orchestrator unit tests"
+npx vitest run src/workload/snapshot/CaptureOrchestrator.test.ts \
+  && echo "PASS: CaptureOrchestrator tests passed" \
+  || { echo "FAIL: CaptureOrchestrator tests failed"; exit 1; }
+
+echo ""
+echo "All field-context + issue-enumeration smoke checks passed."
 ```

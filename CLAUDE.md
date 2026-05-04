@@ -210,3 +210,53 @@ This is sprint 1 of 3 for the phase. Plan a slice of the deliverables appropriat
 - ✅ QA: doc-grounding verification + Discover smoke-probe execution — Qa Engineer (⚡ Quick, 2 SP)
 
 ---
+### Sprint 2 — Issue Enumeration, Custom Field Context & Capture Order | 2026-05-04 | ⏳ in progress | 25 SP est.
+**Goal:** [Phase: Discovery & Full-Snapshot Backup (Run-First-Backup Flow) — Sprint 2 of 3]
+Implement Discover and Snapshot operations against the Atlassian REST API using POST /rest/api/3/search/jql exclusively, capturing the full Phase 1 object set in dependency-correct order with the coverage invariant intact. Attachments are stored binary-faithful with SHA-256 verification. This phase delivers the operator-observable run-first-backup flow.
+
+Deliverables (across all sprints in this phase):
+- Project discovery via paginated GET /rest/api/3/project/search honoring projectScope (all / selected)
+- JSM project detection (projectTypeKey = service_desk) flagged PHASE_2_DEFERRED in manifest, excluded from backup
+- Issue enumeration via POST /rest/api/3/search/jql with pagination terminating on issues.length === 0 || < maxResults; zero usage of deprecated GET /rest/api/3/search
+- Custom field context discovery calling GET /rest/api/3/field/{id}/context only for custom: true fields, with [field-context] skip log lines for system fields
+- Capture-order orchestrator: IssueType → CustomField + FieldConfiguration → Workflow + WorkflowScheme → Project → Board → Sprint → Issue
+- Full Issue payload capture: system + all custom field values, ADF comments, all issue links (both directions), subtasks, sprint membership, watchers, worklogs, attachment refs
+- Binary-faithful attachment download via GET /rest/api/3/attachment/content/{id} with SHA-256 contentHash verification
+- Backup manifest with deletion-diff detection (added/modified/deleted/unchanged change badges)
+- POST /api/policies endpoint accepting rpoHours, retentionDays, projectScope, optional jqlFilter validated via POST /rest/api/3/jql/parse
+- Backup job progress events emitted ≤10s, stalled alert at >20s, 'Completed with N errors' status semantics
+
+This is sprint 2 of 3 for the phase. Plan a slice of the deliverables appropriate for one sprint; remaining items will be picked up in subsequent sprints via the auto-extracted Carry-Forward Backlog.
+
+_Sprint started. Role checkpoints below will update as work completes._
+
+---
+### Sprint 2 — Issue Enumeration, Custom Field Context & Capture Order | 2026-05-04 | 📋 reviewing | 25 SP
+**Goal:** [Phase: Discovery & Full-Snapshot Backup (Run-First-Backup Flow) — Sprint 2 of 3]
+Implement Discover and Snapshot operations against the Atlassian REST API using POST /rest/api/3/search/jql exclusively, capturing the full Phase 1 object set in dependency-correct order with the coverage invariant intact. Attachments are stored binary-faithful with SHA-256 verification. This phase delivers the operator-observable run-first-backup flow.
+
+Deliverables (across all sprints in this phase):
+- Project discovery via paginated GET /rest/api/3/project/search honoring projectScope (all / selected)
+- JSM project detection (projectTypeKey = service_desk) flagged PHASE_2_DEFERRED in manifest, excluded from backup
+- Issue enumeration via POST /rest/api/3/search/jql with pagination terminating on issues.length === 0 || < maxResults; zero usage of deprecated GET /rest/api/3/search
+- Custom field context discovery calling GET /rest/api/3/field/{id}/context only for custom: true fields, with [field-context] skip log lines for system fields
+- Capture-order orchestrator: IssueType → CustomField + FieldConfiguration → Workflow + WorkflowScheme → Project → Board → Sprint → Issue
+- Full Issue payload capture: system + all custom field values, ADF comments, all issue links (both directions), subtasks, sprint membership, watchers, worklogs, attachment refs
+- Binary-faithful attachment download via GET /rest/api/3/attachment/content/{id} with SHA-256 contentHash verification
+- Backup manifest with deletion-diff detection (added/modified/deleted/unchanged change badges)
+- POST /api/policies endpoint accepting rpoHours, retentionDays, projectScope, optional jqlFilter validated via POST /rest/api/3/jql/parse
+- Backup job progress events emitted ≤10s, stalled alert at >20s, 'Completed with N errors' status semantics
+
+This is sprint 2 of 3 for the phase. Plan a slice of the deliverables appropriate for one sprint; remaining items will be picked up in subsequent sprints via the auto-extracted Carry-Forward Backlog.
+
+**Delivered:**
+- ✅ Define Snapshot orchestrator contract and capture-order sequence — Software Architect (◈ Standard, 3 SP)
+- ✅ Implement Issue enumeration via POST /rest/api/3/search/jql with pagination — Backend Developer (◉ Deep, 5 SP)
+- ✅ Implement custom field context discovery with system-field skip guard — Backend Developer (◈ Standard, 3 SP)
+- ✅ Implement Issue payload assembler (system + custom fields, comments, links, subtasks, sprint, watchers, worklogs, attachment refs) — Backend Developer (◉ Deep, 5 SP)
+- ✅ Wire Snapshot phase into capture-order orchestrator and persist manifest — Backend Developer (◈ Standard, 3 SP)
+- ✅ Fix carry-forward doc-grounding P0s (.env, sprint6.md, JiraHttpClient line refs, process.env) — Devops Engineer (⚡ Quick, 2 SP)
+- ✅ Update DEMO.md and CHANGELOG.md for Snapshot Issue-enumeration slice — Frontend Developer (⚡ Quick, 2 SP)
+- ✅ QA: doc-grounding verification + Snapshot smoke-probe execution — Qa Engineer (⚡ Quick, 2 SP)
+
+---
