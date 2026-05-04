@@ -113,3 +113,49 @@ This is sprint 1 of 2 for the phase. Plan a slice of the deliverables appropriat
 - ✅ Doc grounding verification + connect-jira-site smoke probe execution — Qa Engineer (⚡ Quick, 2 SP)
 
 ---
+### Sprint 2 — Platform Stub Endpoints, Manual Connection & Doc Grounding | 2026-05-04 | ⏳ in progress | 21 SP est.
+**Goal:** [Phase: Platform Stub & OAuth 3LO Connection — Sprint 2 of 2]
+Stand up the Platform Stub serving T0 §2 endpoints, implement Atlassian OAuth 2.0 (3LO) authorization with the full Phase 1 scope set (including both write:board-scope:jira-software variants), and deliver the Connections workflow with permission-validation probes and rotating-refresh-token credential storage. This phase establishes the foundation that every subsequent flow exercises.
+
+Deliverables (across all sprints in this phase):
+- Platform Stub exposing all T0 §2 endpoints (POST /api/connections, GET /api/inventory, POST /api/policies, restore endpoints) for single-operator local dev
+- Workload Card UI with value-prop and minimum-requirements copy plus Authorize button
+- OAuth 2.0 Authorization Code (3LO) redirect flow with full T2 §4.2.2 scope string, including both write:board-scope:jira-software (plain) and write:board-scope.admin:jira-software
+- Manual Connection path accepting masked Client ID + Client Secret
+- Canonical authenticated HTTP client with atomic rotating-refresh-token handling, in-flight refresh mutex, and credential store
+- Permission-validation probes for /rest/api/3/myself, /rest/api/3/field, /rest/agile/1.0/board, /rest/api/3/workflow/search with HTTP 403 remediation banners
+- cloudId mismatch handling (409 on reauth) and multi-site connection support
+- Connections list UI showing siteName per connected site
+
+This is sprint 2 of 2 for the phase. Plan a slice of the deliverables appropriate for one sprint; remaining items will be picked up in subsequent sprints via the auto-extracted Carry-Forward Backlog.
+
+_Sprint started. Role checkpoints below will update as work completes._
+
+---
+### Sprint 2 — Platform Stub Endpoints, Manual Connection & Doc Grounding | 2026-05-04 | 📋 reviewing | 21 SP
+**Goal:** [Phase: Platform Stub & OAuth 3LO Connection — Sprint 2 of 2]
+Stand up the Platform Stub serving T0 §2 endpoints, implement Atlassian OAuth 2.0 (3LO) authorization with the full Phase 1 scope set (including both write:board-scope:jira-software variants), and deliver the Connections workflow with permission-validation probes and rotating-refresh-token credential storage. This phase establishes the foundation that every subsequent flow exercises.
+
+Deliverables (across all sprints in this phase):
+- Platform Stub exposing all T0 §2 endpoints (POST /api/connections, GET /api/inventory, POST /api/policies, restore endpoints) for single-operator local dev
+- Workload Card UI with value-prop and minimum-requirements copy plus Authorize button
+- OAuth 2.0 Authorization Code (3LO) redirect flow with full T2 §4.2.2 scope string, including both write:board-scope:jira-software (plain) and write:board-scope.admin:jira-software
+- Manual Connection path accepting masked Client ID + Client Secret
+- Canonical authenticated HTTP client with atomic rotating-refresh-token handling, in-flight refresh mutex, and credential store
+- Permission-validation probes for /rest/api/3/myself, /rest/api/3/field, /rest/agile/1.0/board, /rest/api/3/workflow/search with HTTP 403 remediation banners
+- cloudId mismatch handling (409 on reauth) and multi-site connection support
+- Connections list UI showing siteName per connected site
+
+This is sprint 2 of 2 for the phase. Plan a slice of the deliverables appropriate for one sprint; remaining items will be picked up in subsequent sprints via the auto-extracted Carry-Forward Backlog.
+
+**Delivered:**
+- ✅ Define Platform Stub T0 §2 endpoint contracts and manual-connection schema — Software Architect (◈ Standard, 3 SP)
+- ✅ Implement POST /api/connections and Manual Connection path — Backend Developer (◈ Standard, 3 SP)
+- ✅ Implement GET /api/inventory and POST /api/policies stub endpoints — Backend Developer (◈ Standard, 3 SP)
+- ✅ Implement restore endpoints (stub) per T0 §2 — Backend Developer (◈ Standard, 3 SP)
+- ✅ Build Manual Connection UI form with masked credential input — Frontend Developer (◈ Standard, 3 SP)
+- ✅ Fix carried-forward doc-grounding P0s in INSTALL.md and DEMO.md — Devops Engineer (⚡ Quick, 2 SP)
+- ✅ Update DEMO.md with Manual Connection flow and stub-endpoint smoke probes — Frontend Developer (⚡ Quick, 2 SP)
+- ✅ QA: doc-grounding verification + stub-endpoint smoke probe execution — Qa Engineer (⚡ Quick, 2 SP)
+
+---

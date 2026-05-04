@@ -7,6 +7,7 @@ interface FormState {
   showSecret: boolean;
   loading: boolean;
   error: string | null;
+  permissionError: boolean;
 }
 
 interface Toast {
@@ -22,6 +23,7 @@ export function WorkloadCard() {
     showSecret: false,
     loading: false,
     error: null,
+    permissionError: false,
   });
   const [toast, setToast] = useState<Toast | null>(null);
 
@@ -35,7 +37,7 @@ export function WorkloadCard() {
   };
 
   const openModal = () => {
-    setForm({ clientId: '', clientSecret: '', showSecret: false, loading: false, error: null });
+    setForm({ clientId: '', clientSecret: '', showSecret: false, loading: false, error: null, permissionError: false });
     setShowModal(true);
   };
 
@@ -46,11 +48,16 @@ export function WorkloadCard() {
     setForm(f => ({ ...f, loading: true, error: null }));
 
     try {
-      const res = await fetch('/api/connections/manual', {
+      const res = await fetch('/api/connections', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clientId: form.clientId, clientSecret: form.clientSecret }),
+        body: JSON.stringify({ mode: 'manual', clientId: form.clientId, clientSecret: form.clientSecret }),
       });
+
+      if (res.status === 403) {
+        setForm(f => ({ ...f, loading: false, permissionError: true, clientSecret: '' }));
+        return;
+      }
 
       if (res.status >= 400) {
         const data: { message?: string; error?: string } = await res.json().catch(() => ({}));
@@ -60,6 +67,7 @@ export function WorkloadCard() {
         return;
       }
 
+      setForm(f => ({ ...f, clientSecret: '' }));
       closeModal();
       showToast('Connection created successfully.', 'success');
     } catch {
@@ -177,7 +185,21 @@ export function WorkloadCard() {
                 </div>
               </div>
 
-              {form.error && (
+              {form.permissionError && (
+                <div className="perm-banner" role="alert">
+                  <strong className="perm-banner__title">Permission check failed</strong>
+                  <p className="perm-banner__body">
+                    The credentials were accepted but one or more required Jira scopes are
+                    missing. Go to your{' '}
+                    <strong>Atlassian Developer Console</strong>, grant all Phase&nbsp;1 scopes
+                    (<code>read:me</code>, <code>read:field:jira</code>,{' '}
+                    <code>read:board-scope:jira-software</code>,{' '}
+                    <code>read:workflow:jira</code>), then try again.
+                  </p>
+                </div>
+              )}
+
+              {form.error && !form.permissionError && (
                 <p className="field__error" role="alert">
                   {form.error}
                 </p>

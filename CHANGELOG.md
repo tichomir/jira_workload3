@@ -4,6 +4,55 @@ All notable changes are documented here by sprint.
 
 ---
 
+## [Sprint 2] — 2026-05-04 — Platform Stub Endpoints, Manual Connection & Doc Grounding
+
+### Added
+
+#### Manual connection path — `src/routes/connections.ts`
+- `POST /api/connections` now accepts `"mode": "manual"` (or `"connectionType": "manual"`)
+  with `cloudId`, `siteName`, `clientId`, and `clientSecret` fields.
+- Returns `{ connectionId, cloudId, siteName, scopes: [], status: "connected", clientIdMasked }`;
+  `clientIdMasked` shows only the last four characters of `clientId`.
+- cloudId mismatch enforcement (HTTP 409) applies to both manual and OAuth modes.
+
+#### Inventory endpoint — `src/routes/inventory.ts`, `src/server.ts`
+- `GET /api/inventory?connectionId=<id>` — returns a stub manifest with object counts
+  (`projects`, `issues`, `boards`, `sprints`) scoped to the requested connection.
+- Returns HTTP 400 if `connectionId` is omitted; HTTP 404 if the connection does not exist.
+- Response shape: `{ manifestId, completedAt, counts }`.
+
+#### Policies endpoint — `src/routes/policies.ts`, `src/server.ts`
+- `POST /api/policies` — creates a backup policy for a connection.
+- Required fields: `connectionId`, `projectScope` (`"all"` | `"selected"`), `retentionDays`.
+- Optional: `selectedProjectKeys` (array of project keys; only used when `projectScope` is `"selected"`).
+- Returns HTTP 201 with `{ policyId, connectionId, projectScope, selectedProjectKeys, retentionDays, updatedAt }`.
+
+#### Restore endpoints — `src/routes/restores.ts`, `src/server.ts`
+- `POST /api/restores` — enqueues a restore job.
+  Required: `connectionId`, `backupPointId`, `itemIds` (array).
+  Optional: `conflictMode` (default `"skip"`), `destination` (default `{ type: "original" }`).
+  Returns HTTP 201 with `{ restoreId, status: "pending" }`.
+- `GET /api/restores/:id` — returns restore job status including `restoredCount`, `errorCount`,
+  `createdAt`, `completedAt`, and `phaseDiagnostic` (when set).
+- `GET /api/restores/:id/events` — Server-Sent Events stream; emits one initial progress event
+  with current phase and status, then closes.
+
+#### Database migrations
+- `007_restores.sql` — `restores` table (`restoreId`, `connectionId`, `backupPointId`, `status`,
+  `conflictMode`, `destination`, `itemIds`, `restoredCount`, `errorCount`, `phaseDiagnostic`,
+  `createdAt`, `completedAt`).
+- `008_policies.sql` — `policies` table (`policyId`, `connectionId` FK → `connections`, `projectScope`,
+  `selectedProjectKeys`, `retentionDays`, `updatedAt`).
+
+#### Developer setup
+- `Caddyfile` — local HTTPS reverse-proxy: terminates TLS at `https://localhost`, forwards `/api/*`
+  to port 3000 (API server) and `/*` to port 5173 (Vite dev server). Required for OAuth callback
+  registration with Atlassian's developer console.
+- `.env.example` — documents all required environment variables (`ATLASSIAN_CLIENT_ID`,
+  `ATLASSIAN_CLIENT_SECRET`, `OAUTH_REDIRECT_URI`, `PORT`).
+
+---
+
 ## [Sprint 3] — 2026-05-04 — OAuth 3LO Foundation: HTTP Client, Probes & Connections UI
 
 ### Added
