@@ -217,14 +217,16 @@ export class RestoreOrchestrator implements IRestoreOrchestrator {
 
       // Pre-restore scope re-check guard runs immediately before Board phase.
       if (phase === RestorePhase.Board) {
+        const boardGuardStartMs = Date.now();
         const guardResult = this.boardScopeChecker(effectiveOptions.connectionId);
         if (!guardResult.passed) {
           const failedTs = new Date().toISOString();
+          const boardGuardDurationMs = Date.now() - boardGuardStartMs;
           const message = guardResult.failureMessage ?? 'board scope check failed';
           const diagnostic = `${phase} phase: ${message}`;
 
           console.log(
-            `[restore] phase=${phase} outcome=fail jobId=${jobId} guard=board-scope-recheck`
+            `[restore] jobId=${jobId} event=job_failed phase=${phase} errorCode=dependency_phase_failed durationMs=${boardGuardDurationMs}`
           );
           heartbeat.stop();
           onEvent({
@@ -255,8 +257,9 @@ export class RestoreOrchestrator implements IRestoreOrchestrator {
         }
       }
 
+      const phaseStartMs = Date.now();
       const startedTs = new Date().toISOString();
-      console.log(`[restore] phase=${phase} outcome=start jobId=${jobId}`);
+      console.log(`[restore] jobId=${jobId} event=phase_started phase=${phase}`);
       onEvent({ type: 'phase_started', jobId, ts: startedTs, phase });
       heartbeat.start(phase);
 
@@ -267,7 +270,8 @@ export class RestoreOrchestrator implements IRestoreOrchestrator {
 
         heartbeat.stop();
         const completedTs = new Date().toISOString();
-        console.log(`[restore] phase=${phase} outcome=complete jobId=${jobId}`);
+        const completedDurationMs = Date.now() - phaseStartMs;
+        console.log(`[restore] jobId=${jobId} event=phase_completed phase=${phase} restoredCount=${result.restoredCount} errorCount=${result.errorCount} durationMs=${completedDurationMs}`);
         onEvent({
           type: 'phase_completed',
           jobId,
@@ -292,10 +296,11 @@ export class RestoreOrchestrator implements IRestoreOrchestrator {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         const failedTs = new Date().toISOString();
+        const failedDurationMs = Date.now() - phaseStartMs;
         const diagnostic = `${phase} phase: ${message}`;
 
         heartbeat.stop();
-        console.log(`[restore] phase=${phase} outcome=fail jobId=${jobId}`);
+        console.log(`[restore] jobId=${jobId} event=job_failed phase=${phase} errorCode=dependency_phase_failed durationMs=${failedDurationMs}`);
         onEvent({
           type: 'job_failed',
           jobId,

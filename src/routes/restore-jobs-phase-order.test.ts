@@ -257,10 +257,10 @@ describe('restore job integration — phase ordering and fault injection', () =>
 
     for (const phase of RESTORE_PHASE_ORDER) {
       expect(
-        restoreLogs.some((l) => l.includes(`phase=${phase}`) && l.includes('outcome=start'))
+        restoreLogs.some((l) => l.includes(`phase=${phase}`) && l.includes('event=phase_started'))
       ).toBe(true);
       expect(
-        restoreLogs.some((l) => l.includes(`phase=${phase}`) && l.includes('outcome=complete'))
+        restoreLogs.some((l) => l.includes(`phase=${phase}`) && l.includes('event=phase_completed'))
       ).toBe(true);
     }
   });
@@ -347,19 +347,19 @@ describe('restore job integration — phase ordering and fault injection', () =>
     const phasesBefore = RESTORE_PHASE_ORDER.slice(0, workflowIndex);
     for (const phase of phasesBefore) {
       expect(
-        restoreLogs.some((l) => l.includes(`phase=${phase}`) && l.includes('outcome=start'))
+        restoreLogs.some((l) => l.includes(`phase=${phase}`) && l.includes('event=phase_started'))
       ).toBe(true);
       expect(
-        restoreLogs.some((l) => l.includes(`phase=${phase}`) && l.includes('outcome=complete'))
+        restoreLogs.some((l) => l.includes(`phase=${phase}`) && l.includes('event=phase_completed'))
       ).toBe(true);
     }
 
     // Workflow: started + failed
     expect(
-      restoreLogs.some((l) => l.includes(`phase=${RestorePhase.Workflow}`) && l.includes('outcome=start'))
+      restoreLogs.some((l) => l.includes(`phase=${RestorePhase.Workflow}`) && l.includes('event=phase_started'))
     ).toBe(true);
     expect(
-      restoreLogs.some((l) => l.includes(`phase=${RestorePhase.Workflow}`) && l.includes('outcome=fail'))
+      restoreLogs.some((l) => l.includes(`phase=${RestorePhase.Workflow}`) && l.includes('event=job_failed'))
     ).toBe(true);
 
     // Downstream phases: no log lines at all
@@ -434,13 +434,13 @@ describe('restore job integration — phase ordering and fault injection', () =>
     // Every phase must have both a 'started' and a 'completed' log line
     for (const phase of RESTORE_PHASE_ORDER) {
       const startedLine = restoreLogs.find(
-        (l) => l.includes(`phase=${phase}`) && l.includes('outcome=start')
+        (l) => l.includes(`phase=${phase}`) && l.includes('event=phase_started')
       );
       expect(startedLine, `expected [restore] started log for phase=${phase}`).toBeDefined();
       expect(startedLine).toContain(`jobId=${jobId}`);
 
       const completedLine = restoreLogs.find(
-        (l) => l.includes(`phase=${phase}`) && l.includes('outcome=complete')
+        (l) => l.includes(`phase=${phase}`) && l.includes('event=phase_completed')
       );
       expect(completedLine, `expected [restore] completed log for phase=${phase}`).toBeDefined();
       expect(completedLine).toContain(`jobId=${jobId}`);

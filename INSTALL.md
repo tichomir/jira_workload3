@@ -126,6 +126,14 @@ Add the following secrets to your GitHub repository
 These map to the `.env` keys `ATLASSIAN_CLIENT_ID`, `ATLASSIAN_CLIENT_SECRET`,
 and `OAUTH_REDIRECT_URI` used by the API server at runtime.
 
+### CI artifacts
+
+After each run, the workflow uploads a per-probe results file as the artifact
+`smoke-probe-results` (retained for 30 days). The file contains one `STATUS|probe-name`
+line per probe and is visible in the GitHub Actions run summary under **Artifacts**.
+The job summary also renders a Markdown table of PASS / FAIL / TIMEOUT / Not run
+status for every probe.
+
 ### Running smoke probes locally
 
 To run all probes locally against a running API server:
@@ -174,3 +182,19 @@ All endpoints are served by the Express API server (`npm run server`) on
 | `GET` | `/api/restore-jobs/:id/events` | SSE stream of restore phase events for a job |
 | `GET` | `/api/restore-jobs/trash-check` | Pre-flight trash-window check for selected project keys |
 | `GET` | `/api/backup-points/:id/sdi-teaser` | SDI aggregate summary (issue/project counts, GDPR/PCI DSS regulation tags) for a backup point |
+
+---
+
+## 8. Operations runbook
+
+The engineer-facing runbook for diagnosing and recovering from Phase 1 failure modes is at
+**[`docs/OPERATIONS.md`](docs/OPERATIONS.md)**.
+
+It covers four failure modes, each with Symptoms → Diagnostic log greps → Resolution steps:
+
+| Section | Failure mode |
+|---|---|
+| §1 | Connection failure (403 probe, missing credentials) |
+| §2 | Scope drift (missing OAuth scopes post-token rotation) |
+| §3 | Refresh-token rotation failure (mutex-stuck, credential-table recovery) |
+| §4 | JSM-site detection (PHASE_2_DEFERRED projects, exclusion from inventory counts) |

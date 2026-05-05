@@ -4,6 +4,71 @@ All notable changes are documented here by sprint.
 
 ---
 
+## [1.0.0-mvp] [Sprint 17 — Phase 5 Sprint 2] — 2026-05-05 — MVP Closeout: CI Smoke Gating, Runbook & Tihomir Handoff
+
+This release marks the Phase 1 MVP closeout. All G-01 through G-13 observable signals pass. The CI
+smoke-probe gate is active on every push to `main`/`master`. The operations runbook and handoff
+package are delivered and checked in.
+
+### Added
+
+#### Engineer-facing operations runbook — `docs/OPERATIONS.md`
+- Four-section runbook covering the most common Phase 1 failure modes, each with **Symptoms →
+  Diagnostic log greps → Resolution steps**:
+  1. **Connection Failure** — `probe-failed` status, HTTP 403 remediation, missing-credentials
+     recovery; includes example `[permission-probe]` log lines for all four probe endpoints.
+  2. **Scope Drift** — detecting and recovering from missing OAuth scopes post-token rotation;
+     re-authorize flow and Atlassian developer console scope verification steps.
+  3. **Refresh-Token Rotation Failure** — diagnosing `[auth-refresh] outcome=failure` events;
+     mutex-stuck scenarios and credential-table recovery procedure.
+  4. **JSM-Site Detection** — identifying `PHASE_2_DEFERRED` projects in backup manifests;
+     confirming JSM exclusion from inventory counts and verifying no JSM data leaks into
+     Phase 1 results via `[discover] jsm-deferred` log lines.
+- Source: Sprint 17 scope, T2 §4.5, T3 §3.2.
+
+#### Sprint-kickoff handoff package — `docs/handoff/`
+- Handoff brief for Tihomir covering:
+  - Phase 1 scope summary: all G-01 through G-13 goals and their observable signals.
+  - Phase 2 deferred items with source references (JSM, incremental backup, GFS retention,
+    blob export, cross-site restore, ADF media-link rewrite, audit log, HIPAA tag).
+  - Open-question log (OQ log): OQ-2 audit-log scope confirmation, OQ-3 cross-site
+    remapping, OQ-5 ADF media-link rewrite pass, T7 OQ-3 JSM teaser profile.
+  - Carry-forward backlog: items explicitly deferred from Phase 1 sprints with their
+    source tags and engineering context.
+
+#### Job-status semantics QA report — `docs/qa/job-status-semantics-sprint17.md`
+- Verified coverage of `'Completed with N errors'` vs `'Completed successfully'` across
+  both backup (`src/workload/snapshot/ProgressEmitter.ts`) and restore
+  (`src/platform/ui/restore/RestoreJobProgress.tsx`) flows:
+  - `errorsCount === 0` → `completed` → UI shows "Completed successfully."
+  - `errorsCount > 0` → `completed_with_errors` → UI shows "Completed with N errors — M items
+    restored." The phrase "Completed successfully" is never rendered when `errors > 0`.
+  - `⚠` icon used for `completed_with_errors`; distinct from ✓ (clean) and ✕ (failed).
+- Source: T5 §6.2b.
+
+#### Final regression report — `docs/qa/final-regression-sprint17.md`
+- End-to-end regression pass against all G-01 through G-13 observable signals:
+  - G-01: OAuth 3LO → `GET /me` 200 + non-null `accessToken` + `refreshToken`. ✅
+  - G-02: Project discovery zero-omissions invariant across `all` / `selected` scopes. ✅
+  - G-03: Issue coverage invariant (all custom field values present, no field skipped). ✅
+  - G-04: Binary-faithful attachment round-trip with SHA-256 `contentHash` verification. ✅
+  - G-05: Capture order `IssueType → CustomField → … → Issue` enforced. ✅
+  - G-06: Restore dependency chain `Project → … → issue → post-issue pass` enforced. ✅
+  - G-07: Rotating-refresh-token atomic write + single-flight mutex. ✅
+  - G-08: `POST /rest/api/3/search/jql` exclusive; `GET /rest/api/3/search` absent (`check-http-guard`). ✅
+  - G-09: System-field skip guard in `discoverFieldContexts`; `[field-context] skip` log lines verified. ✅
+  - G-10: SDI scanner detects email, API key, credit card, phone across all four file classes. ✅
+  - G-11: Inventory sidebar renders four object types with JSM exclusion. ✅
+  - G-12: Restore wizard three conflict modes; Skip default; cross-site blocked. ✅
+  - G-13: Heartbeat ≤10 s; stalled alert >20 s; `'Completed with N errors'` semantics. ✅
+
+### No new environment variables
+No new environment variables are introduced in Sprint 17. The CI secrets (`JIRA_SANDBOX_*`)
+documented in `INSTALL.md §6` remain unchanged. The operations runbook is referenced from
+`INSTALL.md §8`.
+
+---
+
 ## [Sprint 16 — Phase 5 Sprint 1] — 2026-05-05 — Observability, Hardening & Sprint-Kickoff Handoff
 
 ### Added

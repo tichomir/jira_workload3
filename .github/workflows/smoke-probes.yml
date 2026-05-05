@@ -163,6 +163,15 @@ jobs:
 
       # ── Summary step — always runs; reads results written by probe steps ──
 
+      - name: Upload probe summary artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-probe-results
+          path: /tmp/smoke-results/results.txt
+          if-no-files-found: warn
+          retention-days: 30
+
       - name: Write probe summary
         if: always()
         run: |

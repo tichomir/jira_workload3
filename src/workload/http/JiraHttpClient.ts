@@ -295,6 +295,7 @@ export class JiraHttpClient implements IJiraHttpClient {
 
   private async _refresh(): Promise<void> {
     if (this.refreshPromise !== null) {
+      console.log(`[auth-refresh] connectionId=${this.connectionId} mutex=queued`);
       return this.refreshPromise;
     }
 

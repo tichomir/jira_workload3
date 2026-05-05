@@ -336,15 +336,15 @@ describe('(1) Happy path — phase_started/phase_completed for every RESTORE_PHA
 
     for (const phase of RESTORE_PHASE_ORDER) {
       const startedLine = restoreLogs.find(
-        (l) => l.includes(`phase=${phase}`) && l.includes('outcome=start')
+        (l) => l.includes(`phase=${phase}`) && l.includes('event=phase_started')
       );
-      expect(startedLine, `expected [restore] phase=${phase} outcome=start`).toBeDefined();
+      expect(startedLine, `expected [restore] phase=${phase} event=phase_started`).toBeDefined();
       expect(startedLine).toContain(`jobId=${jobId}`);
 
       const completedLine = restoreLogs.find(
-        (l) => l.includes(`phase=${phase}`) && l.includes('outcome=complete')
+        (l) => l.includes(`phase=${phase}`) && l.includes('event=phase_completed')
       );
-      expect(completedLine, `expected [restore] phase=${phase} outcome=complete`).toBeDefined();
+      expect(completedLine, `expected [restore] phase=${phase} event=phase_completed`).toBeDefined();
       expect(completedLine).toContain(`jobId=${jobId}`);
     }
 
@@ -434,16 +434,16 @@ describe('(2) Workflow failure — job_failed{code:dependency_phase_failed, phas
 
     // Phases before workflow: started + completed
     for (const phase of RESTORE_PHASE_ORDER.slice(0, workflowIdx)) {
-      expect(restoreLogs.some((l) => l.includes(`phase=${phase}`) && l.includes('outcome=start')), `started log for ${phase}`).toBe(true);
-      expect(restoreLogs.some((l) => l.includes(`phase=${phase}`) && l.includes('outcome=complete')), `completed log for ${phase}`).toBe(true);
+      expect(restoreLogs.some((l) => l.includes(`phase=${phase}`) && l.includes('event=phase_started')), `started log for ${phase}`).toBe(true);
+      expect(restoreLogs.some((l) => l.includes(`phase=${phase}`) && l.includes('event=phase_completed')), `completed log for ${phase}`).toBe(true);
     }
 
     // Workflow: started + failed
     expect(
-      restoreLogs.some((l) => l.includes(`phase=${RestorePhase.Workflow}`) && l.includes('outcome=start'))
+      restoreLogs.some((l) => l.includes(`phase=${RestorePhase.Workflow}`) && l.includes('event=phase_started'))
     ).toBe(true);
     expect(
-      restoreLogs.some((l) => l.includes(`phase=${RestorePhase.Workflow}`) && l.includes('outcome=fail'))
+      restoreLogs.some((l) => l.includes(`phase=${RestorePhase.Workflow}`) && l.includes('event=job_failed'))
     ).toBe(true);
 
     // Downstream phases: no log lines
@@ -539,15 +539,15 @@ describe('(3) Missing write:board-scope.admin:jira-software — board phase guar
       restoreLogs.some(
         (l) =>
           l.includes(`phase=${RestorePhase.Board}`) &&
-          l.includes('outcome=fail') &&
-          l.includes('guard=board-scope-recheck')
+          l.includes('event=job_failed') &&
+          l.includes('errorCode=dependency_phase_failed')
       )
     ).toBe(true);
 
     // Phases before board: started + completed
     for (const phase of RESTORE_PHASE_ORDER.slice(0, boardIdx)) {
-      expect(restoreLogs.some((l) => l.includes(`phase=${phase}`) && l.includes('outcome=start'))).toBe(true);
-      expect(restoreLogs.some((l) => l.includes(`phase=${phase}`) && l.includes('outcome=complete'))).toBe(true);
+      expect(restoreLogs.some((l) => l.includes(`phase=${phase}`) && l.includes('event=phase_started'))).toBe(true);
+      expect(restoreLogs.some((l) => l.includes(`phase=${phase}`) && l.includes('event=phase_completed'))).toBe(true);
     }
 
     // Execution evidence
@@ -639,8 +639,8 @@ describe('(4) Project-in-trash + destination=original — native trash blocks in
 
     // All phases started + completed logs present
     for (const phase of RESTORE_PHASE_ORDER) {
-      expect(restoreLogs.some((l) => l.includes(`phase=${phase}`) && l.includes('outcome=start'))).toBe(true);
-      expect(restoreLogs.some((l) => l.includes(`phase=${phase}`) && l.includes('outcome=complete'))).toBe(true);
+      expect(restoreLogs.some((l) => l.includes(`phase=${phase}`) && l.includes('event=phase_started'))).toBe(true);
+      expect(restoreLogs.some((l) => l.includes(`phase=${phase}`) && l.includes('event=phase_completed'))).toBe(true);
     }
 
     // Execution evidence
@@ -714,9 +714,9 @@ describe('(5) Heartbeats at ≤10s cadence during a long-running phase', () => {
       restoreLogs.some(
         (l) =>
           l.includes(`phase=${RestorePhase.SiteReferenceData}`) &&
-          l.includes('outcome=start')
+          l.includes('event=phase_started')
       ),
-      '[restore] phase=site-reference-data outcome=start log expected'
+      '[restore] phase=site-reference-data event=phase_started log expected'
     ).toBe(true);
 
     // Complete the job
@@ -731,7 +731,7 @@ describe('(5) Heartbeats at ≤10s cadence during a long-running phase', () => {
       finalRestoreLogs.some(
         (l) =>
           l.includes(`phase=${RestorePhase.SiteReferenceData}`) &&
-          l.includes('outcome=complete')
+          l.includes('event=phase_completed')
       )
     ).toBe(true);
 

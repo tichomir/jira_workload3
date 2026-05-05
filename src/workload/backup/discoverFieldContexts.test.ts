@@ -102,8 +102,8 @@ describe('discoverFieldContexts — mixed custom/system fixture', () => {
 
     const skipLogs = logs.filter(l => l.includes('[field-context]') && l.includes('skip'));
     expect(skipLogs).toHaveLength(2);
-    expect(skipLogs[0]).toMatch(/\[field-context\] skip field=status reason=system/);
-    expect(skipLogs[1]).toMatch(/\[field-context\] skip field=priority reason=system/);
+    expect(skipLogs[0]).toMatch(/\[field-context\] skip field_id=status reason=system-field/);
+    expect(skipLogs[1]).toMatch(/\[field-context\] skip field_id=priority reason=system-field/);
   });
 
   it('emits [field-context] fetch log for each custom field with contextCount', async () => {

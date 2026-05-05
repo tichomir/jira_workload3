@@ -25,7 +25,8 @@ CONN_RESPONSE=$(curl -sf -X POST "${BASE}/api/connections" \
     \"siteName\":     \"Restore Smoke Site\",
     \"accessToken\":  \"smoke-access-token\",
     \"refreshToken\": \"smoke-refresh-token\",
-    \"expiresAt\":    9999999999
+    \"expiresAt\":    9999999999,
+    \"scopes\":       \"write:board-scope:jira-software write:board-scope.admin:jira-software\"
   }")
 
 CONNECTION_ID=$(echo "${CONN_RESPONSE}" | python3 -c "import json,sys; print(json.load(sys.stdin)['connectionId'])")
