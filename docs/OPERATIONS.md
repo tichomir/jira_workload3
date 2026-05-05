@@ -267,12 +267,12 @@ This is by design — JSM (Jira Service Management) objects are a Phase 2 delive
 ```bash
 # Query the backup_manifests table directly
 sqlite3 data/jira_workload.db \
-  "SELECT manifestId, completedAt FROM backup_manifests ORDER BY completedAt DESC LIMIT 5;"
+  "SELECT id, createdAt FROM backup_manifests ORDER BY createdAt DESC LIMIT 5;"
 
 # Inspect the manifest JSON for a specific backup point
 sqlite3 data/jira_workload.db \
-  "SELECT json_extract(manifest, '$.jsmDeferredProjects') FROM backup_manifests
-   WHERE manifestId = '<manifestId>';" | python3 -m json.tool
+  "SELECT json_extract(manifestJson, '$.jsmDeferredProjects') FROM backup_manifests
+   WHERE id = '<id>';" | python3 -m json.tool
 ```
 
 The `jsmDeferredProjects` array entries look like:

@@ -79,7 +79,7 @@ Every deliverable below shipped in the commit range `e34cb41` (initial commit) t
 | `POST /api/restore-jobs` Platform Stub endpoint | `599718a` → `src/routes/restore-jobs.ts` |
 | `RestoreOrchestrator` — strict phase ordering: site-reference-data → project → workflow → custom-field → board → sprint → issue → comment/attachment/subtask/issuelink | `ddca167` → `src/workload/restore/RestoreOrchestrator.ts` |
 | `RESTORE_PHASE_ORDER` const enforcing dependency chain | `ddca167` → `src/workload/restore/types.ts` |
-| `GET /api/restore/jobs/:id/events` SSE stream with phase events in dependency order; `job_failed { error.code: 'dependency_phase_failed', phase: <name> }` on halt | `ddca167` → `src/routes/restore-jobs.ts`, `src/platform/restore/sseEvents.ts` |
+| `GET /api/restore-jobs/:id/events` SSE stream with phase events in dependency order; `job_failed { error.code: 'dependency_phase_failed', phase: <name> }` on halt | `ddca167` → `src/routes/restore-jobs.ts`, `src/platform/restore/sseEvents.ts` |
 | Pre-restore scope re-check for both `write:board-scope` variants before Board phase | `0effab9` → `src/workload/restore/boardScopeRecheck.ts` |
 | Atlassian native trash detection — in-place restore blocked for projects in 30–60d trash; alternate-location forced | `0effab9` → `src/workload/restore/trashDetectionGuard.ts` |
 | Post-issue-creation pass — comments, subtasks, issuelinks restored with counts in restore report | `0effab9` → `src/workload/restore/postIssueCreationPass.ts` |

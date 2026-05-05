@@ -669,3 +669,32 @@ This is sprint 2 of 2 for the phase. Plan a slice of the deliverables appropriat
 _Sprint started. Role checkpoints below will update as work completes._
 
 ---
+### Sprint 17 — MVP Closeout: CI Smoke Gating, Runbook & Tihomir Handoff | 2026-05-05 | 📋 reviewing | 29 SP
+**Goal:** [Phase: Observability, Hardening & Sprint-Kickoff Handoff — Sprint 2 of 2]
+Close out MVP with end-to-end observability, the documented log-line guards from the postmortem, hardening against rate limits and edge cases, and the sprint-kickoff handoff package for Tihomir. Validates that every operator flow's smoke probe passes in CI on a clean environment.
+
+Deliverables (across all sprints in this phase):
+- Structured log lines for [search] endpoint, [field-context] skip, [permission-probe], [jql-validate], [restore] phase events, [auth-refresh] mutex acquire/release
+- CI smoke-probe suite running every operator-flow probe against a sandbox Jira site
+- Backup/restore heartbeat + stalled-alert telemetry validated under fault injection
+- Rate-limit handling with exponential backoff on Atlassian 429 responses
+- Job-status semantics QA: 'Completed with N errors' vs 'Completed successfully' coverage
+- Engineer-facing operations runbook (connection failure, scope drift, refresh-token rotation, JSM-site detection)
+- Sprint kickoff brief delivered to Tihomir with Phase 1 scope, Phase 2 deferrals, and open-question log
+- Final regression pass against G-01 through G-13 observable signals
+
+This is sprint 2 of 2 for the phase. Plan a slice of the deliverables appropriate for one sprint; remaining items will be picked up in subsequent sprints via the auto-extracted Carry-Forward Backlog.
+
+**Delivered:**
+- ✅ Author engineer-facing operations runbook (docs/OPERATIONS.md) — Software Architect (◈ Standard, 3 SP)
+- ✅ Wire all operator-flow probes into CI smoke-probe pipeline — Devops Engineer (◉ Deep, 5 SP)
+- ✅ QA job-status semantics: 'Completed with N errors' vs 'Completed successfully' — Qa Engineer (◈ Standard, 3 SP)
+- ✅ Final regression pass against G-01 through G-13 observable signals — Qa Engineer (◈ Standard, 3 SP)
+- ✅ Author sprint-kickoff brief for Tihomir — Software Architect (◈ Standard, 3 SP)
+- ✅ Resolve P0 doc-grounding carry-forwards in canonical docs — Devops Engineer (◈ Standard, 3 SP)
+- ✅ Update CHANGELOG.md and INSTALL.md for sprint 17 deliverables — Devops Engineer (⚡ Quick, 1 SP)
+- ✅ Doc-grounding verification across all canonical docs — Qa Engineer (⚡ Quick, 2 SP)
+- ✅ Fix G-09 field-context skip log format mismatch — Qa Engineer (◈ Standard, 3 SP)
+- ✅ Verify test suite passes after log format changes — Devops Engineer (◈ Standard, 3 SP)
+
+---
