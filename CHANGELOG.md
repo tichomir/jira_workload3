@@ -4,6 +4,91 @@ All notable changes are documented here by sprint.
 
 ---
 
+## [Sprint 16 — Phase 5 Sprint 1] — 2026-05-05 — Observability, Hardening & Sprint-Kickoff Handoff
+
+### Added
+
+#### Rate-limit handling with exponential backoff — `src/workload/http/JiraHttpClient.ts`
+- `_retryWithBackoff(url, init, firstResponse, endpoint)` — retries the original request on
+  HTTP 429 up to `RATE_LIMIT_MAX_RETRIES = 4` additional attempts before throwing.
+- `_computeRetryDelay(response, attempt)` — delay strategy:
+  1. Reads the Atlassian `Retry-After` response header first: accepts both plain-seconds
+     and HTTP-date formats.
+  2. Falls back to capped exponential backoff when the header is absent or unparseable:
+     `delay = min(RATE_LIMIT_BASE_MS × 2^(attempt−1), RATE_LIMIT_MAX_MS)` with ±20% jitter.
+     - `RATE_LIMIT_BASE_MS = 1000 ms`, `RATE_LIMIT_MAX_MS = 8000 ms`.
+     - Schedule (no `Retry-After`): attempt 1 → ~1 s; attempt 2 → ~2 s; attempt 3 → ~4 s; attempt 4 → ~8 s.
+- Emits `[rate-limit] attempt=<n> delayMs=<ms> endpoint=<path>` before each sleep so every
+  retry is operator-observable in the structured log stream.
+- `RateLimitedError` — typed error thrown when all retries are exhausted; `message` encodes
+  endpoint and attempt count; callers can distinguish rate-limit exhaustion from HTTP errors.
+- `SleepFn` — injectable sleep function (`(ms: number) => Promise<void>`); production default
+  is `setTimeout`; tests inject a no-op so backoff tests run without real wall-clock delays.
+- Source: T2 §4.5.
+
+#### CI smoke-probe suite — `.github/workflows/smoke-probes.yml`
+- GitHub Actions workflow triggered on push and pull-request events targeting `main` /
+  `master`, and on manual `workflow_dispatch`.
+- Secrets consumed (set via **Settings → Secrets and variables → Actions**; see `INSTALL.md §6`):
+
+  | Secret | Maps to env var |
+  |---|---|
+  | `JIRA_SANDBOX_CLIENT_ID` | `ATLASSIAN_CLIENT_ID` |
+  | `JIRA_SANDBOX_CLIENT_SECRET` | `ATLASSIAN_CLIENT_SECRET` |
+  | `JIRA_SANDBOX_OAUTH_REDIRECT_URI` | `OAUTH_REDIRECT_URI` |
+
+- Runs all five operator-flow probes with `if: always()` so later probes execute even when
+  an earlier probe fails:
+
+  | Step | Script |
+  |---|---|
+  | `Probe: connect-jira-site` | `scripts/smoke/probe-connect-jira-site.sh` |
+  | `Probe: run-first-backup` | `scripts/smoke/probe-run-first-backup.sh` |
+  | `Probe: browse-protected-inventory` | `scripts/smoke/probe-browse-protected-inventory.sh` |
+  | `Probe: restore-protected-objects` | `scripts/smoke/probe-restore-protected-objects.sh` |
+  | `Probe: view-sdi-teaser` | `scripts/smoke/probe-view-sdi-teaser.sh` |
+
+- Per-probe timeout extracted from each script's `# timeout:` header directive and enforced
+  via the system `timeout` command; results (PASS / FAIL / TIMEOUT) written to a shared
+  results file so the summary step can report all outcomes even when individual steps fail.
+- Probe results rendered as a Markdown table in the GitHub Actions job summary via
+  `$GITHUB_STEP_SUMMARY`; job exits 1 when any probe fails or times out.
+
+#### Local smoke runner — `scripts/run-smoke-probes.sh`
+- Discovers all `probe-*.sh` files in `scripts/smoke/` (or a custom directory passed as `$1`)
+  and runs them in alphabetical order.
+- Extracts `# name:` and `# timeout:` directives from each probe header; enforces the timeout
+  via the system `timeout` command.
+- Exits 1 and prints the failing probe names when any probe fails or times out.
+- Writes a Markdown summary table to `$GITHUB_STEP_SUMMARY` when running inside GitHub Actions.
+- Run locally: `bash scripts/run-smoke-probes.sh` (requires a running API server on `PORT`).
+
+### Structured log-line catalog (Phase 1 — validated in this sprint)
+
+All `[tag]` log lines confirmed present and accurate across the Phase 1 module set:
+
+| Tag | Format | Source file |
+|---|---|---|
+| `[search]` | `endpoint=search/jql project=<key> page=<n> pageSize=<n> returnedCount=<n>` | `src/workload/http/JiraHttpClient.ts` |
+| `[field-context]` | `skip field_id=<id> reason=system-field` / `fetch field_id=<id> contextCount=<n>` | `src/workload/backup/discoverFieldContexts.ts` |
+| `[permission-probe]` | `connectionId=<id> endpoint=<path> status=<n> duration_ms=<n>` | `src/probes/permissionProbes.ts` |
+| `[jql-validate]` | `connectionId=<id> outcome=valid\|invalid\|error errorsCount=<n>` | `src/routes/policies.ts` |
+| `[restore]` | `guard=trash-detection projectKey=<key> trashed=<bool>` | `src/workload/restore/trashDetectionGuard.ts` |
+| `[auth-refresh]` | `connectionId=<id> mutex=acquire\|release` / `outcome=success\|failure\|token-rotated` | `src/http/JiraHttpClient.ts`, `src/workload/http/JiraHttpClient.ts` |
+| `[rate-limit]` | `attempt=<n> delayMs=<ms> endpoint=<path>` | `src/workload/http/JiraHttpClient.ts` |
+| `[attachment]` | `op=download id=<id> bytes=<n> sha256=<hex> outcome=ok\|hash_mismatch\|http_error` | `src/workload/snapshot/downloadIssueAttachments.ts` |
+| `[backup-job]` | `op=start\|heartbeat\|stalled\|completed\|failed jobId=<id> errors=<n>` | `src/workload/snapshot/ProgressEmitter.ts` |
+| `[sdi]` | `scan path=<p> class=<c> email=<n> apiKey=<n> cc=<n> phone=<n>` | `src/workload/sdi/scanDispatcher.ts` |
+| `[inventory]` | `connectionId=<id> backupPointId=<id\|none> jsmExcludedProjects=<n>` | `src/routes/inventory.ts` |
+| `[discover]` | `jsm-deferred projectKey=<key> reason=PHASE_2_DEFERRED` | `src/workload/backup/discoverProjects.ts` |
+
+### No new environment variables
+`RATE_LIMIT_MAX_RETRIES` (4), `RATE_LIMIT_BASE_MS` (1000 ms), and `RATE_LIMIT_MAX_MS` (8000 ms)
+are compile-time constants in `src/workload/http/JiraHttpClient.ts`. No env-var override is
+exposed in Phase 1. CI secrets (`JIRA_SANDBOX_*`) are documented in `INSTALL.md §6`.
+
+---
+
 ## [Sprint 15] — 2026-05-05 — SDI Teaser Scanner & Compliance Tags
 
 ### Added

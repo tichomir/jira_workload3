@@ -49,7 +49,7 @@ export async function discoverFieldContexts(
 
   for (const field of fields) {
     if (!field.custom) {
-      console.log(`[field-context] skip field_id=${field.id} reason=system-field`);
+      console.log(`[field-context] skip field=${field.id} reason=system`);
       continue;
     }
 

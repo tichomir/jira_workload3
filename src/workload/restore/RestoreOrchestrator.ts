@@ -224,7 +224,7 @@ export class RestoreOrchestrator implements IRestoreOrchestrator {
           const diagnostic = `${phase} phase: ${message}`;
 
           console.log(
-            `[restore] phase=${phase} outcome=failed jobId=${jobId} guard=board-scope-recheck`
+            `[restore] phase=${phase} outcome=fail jobId=${jobId} guard=board-scope-recheck`
           );
           heartbeat.stop();
           onEvent({
@@ -256,7 +256,7 @@ export class RestoreOrchestrator implements IRestoreOrchestrator {
       }
 
       const startedTs = new Date().toISOString();
-      console.log(`[restore] phase=${phase} outcome=started jobId=${jobId}`);
+      console.log(`[restore] phase=${phase} outcome=start jobId=${jobId}`);
       onEvent({ type: 'phase_started', jobId, ts: startedTs, phase });
       heartbeat.start(phase);
 
@@ -267,7 +267,7 @@ export class RestoreOrchestrator implements IRestoreOrchestrator {
 
         heartbeat.stop();
         const completedTs = new Date().toISOString();
-        console.log(`[restore] phase=${phase} outcome=completed jobId=${jobId}`);
+        console.log(`[restore] phase=${phase} outcome=complete jobId=${jobId}`);
         onEvent({
           type: 'phase_completed',
           jobId,
@@ -295,7 +295,7 @@ export class RestoreOrchestrator implements IRestoreOrchestrator {
         const diagnostic = `${phase} phase: ${message}`;
 
         heartbeat.stop();
-        console.log(`[restore] phase=${phase} outcome=failed jobId=${jobId}`);
+        console.log(`[restore] phase=${phase} outcome=fail jobId=${jobId}`);
         onEvent({
           type: 'job_failed',
           jobId,

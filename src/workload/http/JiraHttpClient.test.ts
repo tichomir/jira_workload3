@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
-import { JiraHttpClient } from './JiraHttpClient.js';
+import { JiraHttpClient, RateLimitedError } from './JiraHttpClient.js';
 import { _setDbForTesting, _resetDb } from '../../db/database.js';
 
 const TEST_CONN_ID = 'wl-conn-test-001';
@@ -420,9 +420,11 @@ describe('JiraHttpClient (workload) — enumerateIssues', () => {
     expect(searchLogs[0]).toContain('endpoint=search/jql');
     expect(searchLogs[0]).toContain('project=ALPHA');
     expect(searchLogs[0]).toContain('page=1');
-    expect(searchLogs[0]).toContain('count=3');
+    expect(searchLogs[0]).toContain('pageSize=3');
+    expect(searchLogs[0]).toContain('returnedCount=3');
     expect(searchLogs[1]).toContain('page=2');
-    expect(searchLogs[1]).toContain('count=1');
+    expect(searchLogs[1]).toContain('pageSize=3');
+    expect(searchLogs[1]).toContain('returnedCount=1');
   });
 
   it('POSTs to /rest/api/3/search/jql and not to any other search endpoint', async () => {
@@ -457,6 +459,134 @@ describe('JiraHttpClient (workload) — enumerateIssues', () => {
 
     expect(result).toHaveLength(1);
     expect(mockFetch).toHaveBeenCalledOnce();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 429 rate-limit exponential backoff
+// ---------------------------------------------------------------------------
+
+describe('JiraHttpClient (workload) — 429 rate-limit backoff', () => {
+  let db: Database.Database;
+  let logs: string[];
+  let sleepDelays: number[];
+
+  beforeEach(() => {
+    db = createTestDb();
+    _setDbForTesting(db);
+    JiraHttpClient._clearInstances();
+    logs = [];
+    sleepDelays = [];
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      logs.push(args.map(String).join(' '));
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    _resetDb();
+    JiraHttpClient._clearInstances();
+  });
+
+  function makeSleepFn() {
+    return async (ms: number) => { sleepDelays.push(ms); };
+  }
+
+  it('retries after 429 and succeeds on second attempt', async () => {
+    let callCount = 0;
+    const mockFetch = vi.fn(async (_url: string, _init?: RequestInit): Promise<Response> => {
+      callCount++;
+      if (callCount === 1) {
+        return new Response('Too Many Requests', { status: 429 });
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    const client = JiraHttpClient._createForTesting(TEST_CONN_ID, mockFetch, makeSleepFn());
+    const result = await client.getJson<{ ok: boolean }>(CLOUD_BASE, '/rest/api/3/myself');
+
+    expect(result).toEqual({ ok: true });
+    expect(sleepDelays).toHaveLength(1);
+
+    const rateLimitLogs = logs.filter(l => l.includes('[rate-limit]'));
+    expect(rateLimitLogs).toHaveLength(1);
+    expect(rateLimitLogs[0]).toContain('attempt=1');
+    expect(rateLimitLogs[0]).toContain('/rest/api/3/myself');
+  });
+
+  it('honors Retry-After seconds header and uses it as the delay', async () => {
+    let callCount = 0;
+    const mockFetch = vi.fn(async (_url: string, _init?: RequestInit): Promise<Response> => {
+      callCount++;
+      if (callCount === 1) {
+        return new Response('Too Many Requests', {
+          status: 429,
+          headers: { 'Retry-After': '30' },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    const client = JiraHttpClient._createForTesting(TEST_CONN_ID, mockFetch, makeSleepFn());
+    await client.getJson<{ ok: boolean }>(CLOUD_BASE, '/rest/api/3/myself');
+
+    expect(sleepDelays).toHaveLength(1);
+    expect(sleepDelays[0]).toBe(30000);
+
+    const rateLimitLogs = logs.filter(l => l.includes('[rate-limit]'));
+    expect(rateLimitLogs[0]).toContain('delayMs=30000');
+  });
+
+  it('throws RateLimitedError after exhausting max retries', async () => {
+    const mockFetch = vi.fn(async (_url: string, _init?: RequestInit): Promise<Response> =>
+      new Response('Too Many Requests', { status: 429 })
+    );
+
+    const client = JiraHttpClient._createForTesting(TEST_CONN_ID, mockFetch, makeSleepFn());
+
+    await expect(
+      client.getJson<unknown>(CLOUD_BASE, '/rest/api/3/myself')
+    ).rejects.toThrow(RateLimitedError);
+
+    // 4 retries → 4 sleeps and 4 [rate-limit] log lines
+    expect(sleepDelays).toHaveLength(4);
+
+    const rateLimitLogs = logs.filter(l => l.includes('[rate-limit]'));
+    expect(rateLimitLogs).toHaveLength(4);
+    expect(rateLimitLogs[0]).toContain('attempt=1');
+    expect(rateLimitLogs[3]).toContain('attempt=4');
+  });
+
+  it('uses exponential backoff delays when no Retry-After is present', async () => {
+    let callCount = 0;
+    const mockFetch = vi.fn(async (_url: string, _init?: RequestInit): Promise<Response> => {
+      callCount++;
+      if (callCount <= 3) {
+        return new Response('Too Many Requests', { status: 429 });
+      }
+      return new Response(JSON.stringify({ done: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    const client = JiraHttpClient._createForTesting(TEST_CONN_ID, mockFetch, makeSleepFn());
+    await client.getJson<unknown>(CLOUD_BASE, '/rest/api/3/myself');
+
+    expect(sleepDelays).toHaveLength(3);
+    // Delays grow: attempt=1 ~1000ms, attempt=2 ~2000ms, attempt=3 ~4000ms (with ±20% jitter)
+    expect(sleepDelays[0]).toBeGreaterThanOrEqual(800);
+    expect(sleepDelays[0]).toBeLessThanOrEqual(1200);
+    expect(sleepDelays[1]).toBeGreaterThanOrEqual(1600);
+    expect(sleepDelays[1]).toBeLessThanOrEqual(2400);
+    expect(sleepDelays[2]).toBeGreaterThanOrEqual(3200);
+    expect(sleepDelays[2]).toBeLessThanOrEqual(4800);
   });
 });
 

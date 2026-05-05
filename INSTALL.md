@@ -108,7 +108,52 @@ curl -sf http://localhost:${PORT:-3000}/api/connections | python3 -m json.tool
 An empty JSON array `[]` confirms the server is healthy and the database is
 initialised.
 
-## 6. API surface
+## 6. CI Secrets
+
+The smoke-probe CI workflow (`.github/workflows/smoke-probes.yml`) runs all
+five operator-flow probes against a sandbox Jira site on every push to
+`main`/`master` and on every pull request.
+
+Add the following secrets to your GitHub repository
+(**Settings → Secrets and variables → Actions → New repository secret**):
+
+| Secret name | Description |
+|---|---|
+| `JIRA_SANDBOX_CLIENT_ID` | OAuth 2.0 Client ID for the sandbox Jira app (Atlassian developer console) |
+| `JIRA_SANDBOX_CLIENT_SECRET` | OAuth 2.0 Client Secret for the same app |
+| `JIRA_SANDBOX_OAUTH_REDIRECT_URI` | Redirect URI registered in the Atlassian developer console for the sandbox app |
+
+These map to the `.env` keys `ATLASSIAN_CLIENT_ID`, `ATLASSIAN_CLIENT_SECRET`,
+and `OAUTH_REDIRECT_URI` used by the API server at runtime.
+
+### Running smoke probes locally
+
+To run all probes locally against a running API server:
+
+```bash
+# Start the server first (Terminal 1)
+npm run server
+
+# Run the probe suite (Terminal 2)
+bash scripts/run-smoke-probes.sh
+```
+
+Each probe script in `scripts/smoke/` can also be run individually:
+
+```bash
+bash scripts/smoke/probe-connect-jira-site.sh
+bash scripts/smoke/probe-run-first-backup.sh
+bash scripts/smoke/probe-browse-protected-inventory.sh
+bash scripts/smoke/probe-restore-protected-objects.sh
+bash scripts/smoke/probe-view-sdi-teaser.sh
+```
+
+The runner script extracts `# name:` and `# timeout:` from each probe's header
+and enforces the timeout via the system `timeout` command.
+
+---
+
+## 7. API surface
 
 All endpoints are served by the Express API server (`npm run server`) on
 `http://localhost:${PORT}` (default 3000).
@@ -128,3 +173,4 @@ All endpoints are served by the Express API server (`npm run server`) on
 | `POST` | `/api/restore-jobs` | Create and launch a restore job |
 | `GET` | `/api/restore-jobs/:id/events` | SSE stream of restore phase events for a job |
 | `GET` | `/api/restore-jobs/trash-check` | Pre-flight trash-window check for selected project keys |
+| `GET` | `/api/backup-points/:id/sdi-teaser` | SDI aggregate summary (issue/project counts, GDPR/PCI DSS regulation tags) for a backup point |

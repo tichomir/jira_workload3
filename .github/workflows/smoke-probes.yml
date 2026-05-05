@@ -1,0 +1,230 @@
+name: Smoke Probes
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+# Credentials for the sandbox Jira site are sourced from repository secrets.
+# See INSTALL.md §"CI Secrets" for the required secret names and how to set them.
+
+jobs:
+  smoke-probes:
+    name: Operator-flow smoke probes
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      PORT: 3000
+      DB_PATH: data/jira_workload.db
+      ATLASSIAN_CLIENT_ID: ${{ secrets.JIRA_SANDBOX_CLIENT_ID }}
+      ATLASSIAN_CLIENT_SECRET: ${{ secrets.JIRA_SANDBOX_CLIENT_SECRET }}
+      OAUTH_REDIRECT_URI: ${{ secrets.JIRA_SANDBOX_OAUTH_REDIRECT_URI }}
+
+    steps:
+      # ── Setup ────────────────────────────────────────────────────────────
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Write .env from CI secrets
+        run: |
+          cat > .env <<EOF
+          ATLASSIAN_CLIENT_ID=${ATLASSIAN_CLIENT_ID}
+          ATLASSIAN_CLIENT_SECRET=${ATLASSIAN_CLIENT_SECRET}
+          OAUTH_REDIRECT_URI=${OAUTH_REDIRECT_URI}
+          PORT=${PORT}
+          EOF
+
+      - name: Start API server
+        run: npm run server &
+
+      - name: Wait for API server (up to 30 s)
+        run: |
+          for i in $(seq 1 15); do
+            if curl -sf "http://localhost:${PORT}/api/connections" > /dev/null 2>&1; then
+              echo "Server ready after ${i} poll(s)"
+              exit 0
+            fi
+            echo "Poll ${i}/15 — not ready yet, sleeping 2 s…"
+            sleep 2
+          done
+          echo "ERROR: server did not become ready within 30 s"
+          exit 1
+
+      - name: Create results directory
+        run: mkdir -p /tmp/smoke-results
+
+      # ── Probe steps — each step name appears in the CI failure summary ───
+      # The timeout value is extracted from the probe's "# timeout:" header.
+      # Results (PASS/FAIL/TIMEOUT) are written to /tmp/smoke-results/ so the
+      # final summary step can collect them without re-running any probe.
+
+      - name: "Probe: connect-jira-site"
+        if: always()
+        run: |
+          PROBE=scripts/smoke/probe-connect-jira-site.sh
+          NAME=$(grep -m1 '^# name:' "$PROBE" | sed 's/^# name:[[:space:]]*//' | tr -d '\r')
+          LIMIT=$(grep -m1 '^# timeout:' "$PROBE" | sed 's/^# timeout:[[:space:]]*//' | tr -d '\rs')
+          LIMIT=${LIMIT:-120}
+          echo "==> Probe: ${NAME}  timeout: ${LIMIT}s"
+          if timeout "${LIMIT}" bash "$PROBE"; then
+            echo "PASS|${NAME}" >> /tmp/smoke-results/results.txt
+          else
+            EC=$?
+            [ "$EC" -eq 124 ] \
+              && echo "TIMEOUT|${NAME}" >> /tmp/smoke-results/results.txt \
+              || echo "FAIL|${NAME}" >> /tmp/smoke-results/results.txt
+            exit "$EC"
+          fi
+
+      - name: "Probe: run-first-backup"
+        if: always()
+        run: |
+          PROBE=scripts/smoke/probe-run-first-backup.sh
+          NAME=$(grep -m1 '^# name:' "$PROBE" | sed 's/^# name:[[:space:]]*//' | tr -d '\r')
+          LIMIT=$(grep -m1 '^# timeout:' "$PROBE" | sed 's/^# timeout:[[:space:]]*//' | tr -d '\rs')
+          LIMIT=${LIMIT:-120}
+          echo "==> Probe: ${NAME}  timeout: ${LIMIT}s"
+          if timeout "${LIMIT}" bash "$PROBE"; then
+            echo "PASS|${NAME}" >> /tmp/smoke-results/results.txt
+          else
+            EC=$?
+            [ "$EC" -eq 124 ] \
+              && echo "TIMEOUT|${NAME}" >> /tmp/smoke-results/results.txt \
+              || echo "FAIL|${NAME}" >> /tmp/smoke-results/results.txt
+            exit "$EC"
+          fi
+
+      - name: "Probe: browse-protected-inventory"
+        if: always()
+        run: |
+          PROBE=scripts/smoke/probe-browse-protected-inventory.sh
+          NAME=$(grep -m1 '^# name:' "$PROBE" | sed 's/^# name:[[:space:]]*//' | tr -d '\r')
+          LIMIT=$(grep -m1 '^# timeout:' "$PROBE" | sed 's/^# timeout:[[:space:]]*//' | tr -d '\rs')
+          LIMIT=${LIMIT:-120}
+          echo "==> Probe: ${NAME}  timeout: ${LIMIT}s"
+          if timeout "${LIMIT}" bash "$PROBE"; then
+            echo "PASS|${NAME}" >> /tmp/smoke-results/results.txt
+          else
+            EC=$?
+            [ "$EC" -eq 124 ] \
+              && echo "TIMEOUT|${NAME}" >> /tmp/smoke-results/results.txt \
+              || echo "FAIL|${NAME}" >> /tmp/smoke-results/results.txt
+            exit "$EC"
+          fi
+
+      - name: "Probe: restore-protected-objects"
+        if: always()
+        run: |
+          PROBE=scripts/smoke/probe-restore-protected-objects.sh
+          NAME=$(grep -m1 '^# name:' "$PROBE" | sed 's/^# name:[[:space:]]*//' | tr -d '\r')
+          LIMIT=$(grep -m1 '^# timeout:' "$PROBE" | sed 's/^# timeout:[[:space:]]*//' | tr -d '\rs')
+          LIMIT=${LIMIT:-120}
+          echo "==> Probe: ${NAME}  timeout: ${LIMIT}s"
+          if timeout "${LIMIT}" bash "$PROBE"; then
+            echo "PASS|${NAME}" >> /tmp/smoke-results/results.txt
+          else
+            EC=$?
+            [ "$EC" -eq 124 ] \
+              && echo "TIMEOUT|${NAME}" >> /tmp/smoke-results/results.txt \
+              || echo "FAIL|${NAME}" >> /tmp/smoke-results/results.txt
+            exit "$EC"
+          fi
+
+      - name: "Probe: view-sdi-teaser"
+        if: always()
+        run: |
+          PROBE=scripts/smoke/probe-view-sdi-teaser.sh
+          NAME=$(grep -m1 '^# name:' "$PROBE" | sed 's/^# name:[[:space:]]*//' | tr -d '\r')
+          LIMIT=$(grep -m1 '^# timeout:' "$PROBE" | sed 's/^# timeout:[[:space:]]*//' | tr -d '\rs')
+          LIMIT=${LIMIT:-120}
+          echo "==> Probe: ${NAME}  timeout: ${LIMIT}s"
+          if timeout "${LIMIT}" bash "$PROBE"; then
+            echo "PASS|${NAME}" >> /tmp/smoke-results/results.txt
+          else
+            EC=$?
+            [ "$EC" -eq 124 ] \
+              && echo "TIMEOUT|${NAME}" >> /tmp/smoke-results/results.txt \
+              || echo "FAIL|${NAME}" >> /tmp/smoke-results/results.txt
+            exit "$EC"
+          fi
+
+      # ── Summary step — always runs; reads results written by probe steps ──
+
+      - name: Write probe summary
+        if: always()
+        run: |
+          RESULTS_FILE=/tmp/smoke-results/results.txt
+
+          # Collect probes that were never reached (server startup failure, etc.)
+          ALL_PROBES=(
+            "connect-jira-site"
+            "run-first-backup"
+            "browse-protected-inventory"
+            "restore-protected-objects"
+            "view-sdi-teaser"
+          )
+
+          declare -A PROBE_STATUS
+          if [[ -f "$RESULTS_FILE" ]]; then
+            while IFS='|' read -r status name; do
+              PROBE_STATUS["$name"]="$status"
+            done < "$RESULTS_FILE"
+          fi
+
+          echo ""
+          echo "========================================================"
+          echo "  Smoke Probe Summary"
+          echo "========================================================"
+          FAILURES=()
+          for name in "${ALL_PROBES[@]}"; do
+            STATUS="${PROBE_STATUS[$name]:-NOT_RUN}"
+            printf "  %-8s %s\n" "$STATUS" "$name"
+            [[ "$STATUS" != "PASS" ]] && FAILURES+=("$name ($STATUS)")
+          done
+
+          # Write Markdown summary to GitHub Actions job summary.
+          {
+            echo "## Smoke Probe Results"
+            echo ""
+            echo "| Probe | Status |"
+            echo "|---|---|"
+            for name in "${ALL_PROBES[@]}"; do
+              STATUS="${PROBE_STATUS[$name]:-NOT_RUN}"
+              case "$STATUS" in
+                PASS)    echo "| \`${name}\` | ✅ Pass |" ;;
+                FAIL)    echo "| \`${name}\` | ❌ Fail |" ;;
+                TIMEOUT) echo "| \`${name}\` | ⏱️ Timeout |" ;;
+                *)       echo "| \`${name}\` | ⚠️ Not run |" ;;
+              esac
+            done
+            if [[ ${#FAILURES[@]} -gt 0 ]]; then
+              echo ""
+              echo "### Failed probes"
+              echo ""
+              for item in "${FAILURES[@]}"; do
+                echo "- \`${item}\`"
+              done
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ ${#FAILURES[@]} -gt 0 ]]; then
+            echo ""
+            echo "FAILED: ${FAILURES[*]}"
+            exit 1
+          fi
+
+          echo ""
+          echo "All smoke probes passed."

@@ -604,3 +604,49 @@ Deliverables:
 - ✅ Doc-grounding verification for sprint 15 docs — Qa Engineer (⚡ Quick, 2 SP)
 
 ---
+### Sprint 16 — Observability, Log-Line Guards & Rate-Limit Hardening | 2026-05-05 | ⏳ in progress | 23 SP est.
+**Goal:** [Phase: Observability, Hardening & Sprint-Kickoff Handoff — Sprint 1 of 2]
+Close out MVP with end-to-end observability, the documented log-line guards from the postmortem, hardening against rate limits and edge cases, and the sprint-kickoff handoff package for Tihomir. Validates that every operator flow's smoke probe passes in CI on a clean environment.
+
+Deliverables (across all sprints in this phase):
+- Structured log lines for [search] endpoint, [field-context] skip, [permission-probe], [jql-validate], [restore] phase events, [auth-refresh] mutex acquire/release
+- CI smoke-probe suite running every operator-flow probe against a sandbox Jira site
+- Backup/restore heartbeat + stalled-alert telemetry validated under fault injection
+- Rate-limit handling with exponential backoff on Atlassian 429 responses
+- Job-status semantics QA: 'Completed with N errors' vs 'Completed successfully' coverage
+- Engineer-facing operations runbook (connection failure, scope drift, refresh-token rotation, JSM-site detection)
+- Sprint kickoff brief delivered to Tihomir with Phase 1 scope, Phase 2 deferrals, and open-question log
+- Final regression pass against G-01 through G-13 observable signals
+
+This is sprint 1 of 2 for the phase. Plan a slice of the deliverables appropriate for one sprint; remaining items will be picked up in subsequent sprints via the auto-extracted Carry-Forward Backlog.
+
+_Sprint started. Role checkpoints below will update as work completes._
+
+---
+### Sprint 16 — Observability, Log-Line Guards & Rate-Limit Hardening | 2026-05-05 | 📋 reviewing | 23 SP
+**Goal:** [Phase: Observability, Hardening & Sprint-Kickoff Handoff — Sprint 1 of 2]
+Close out MVP with end-to-end observability, the documented log-line guards from the postmortem, hardening against rate limits and edge cases, and the sprint-kickoff handoff package for Tihomir. Validates that every operator flow's smoke probe passes in CI on a clean environment.
+
+Deliverables (across all sprints in this phase):
+- Structured log lines for [search] endpoint, [field-context] skip, [permission-probe], [jql-validate], [restore] phase events, [auth-refresh] mutex acquire/release
+- CI smoke-probe suite running every operator-flow probe against a sandbox Jira site
+- Backup/restore heartbeat + stalled-alert telemetry validated under fault injection
+- Rate-limit handling with exponential backoff on Atlassian 429 responses
+- Job-status semantics QA: 'Completed with N errors' vs 'Completed successfully' coverage
+- Engineer-facing operations runbook (connection failure, scope drift, refresh-token rotation, JSM-site detection)
+- Sprint kickoff brief delivered to Tihomir with Phase 1 scope, Phase 2 deferrals, and open-question log
+- Final regression pass against G-01 through G-13 observable signals
+
+This is sprint 1 of 2 for the phase. Plan a slice of the deliverables appropriate for one sprint; remaining items will be picked up in subsequent sprints via the auto-extracted Carry-Forward Backlog.
+
+**Delivered:**
+- ✅ Specify structured log schema and rate-limit/backoff contract in ARCHITECTURE.md — Software Architect (◈ Standard, 3 SP)
+- ✅ Resolve P0 doc-grounding carry-forward items — Devops Engineer (⚡ Quick, 2 SP)
+- ✅ Implement structured log lines across the six observability tags — Backend Developer (◈ Standard, 3 SP)
+- ✅ Implement exponential backoff for Atlassian 429 responses in JiraHttpClient — Backend Developer (◈ Standard, 3 SP)
+- ✅ Validate heartbeat + stalled-alert telemetry under fault injection — Qa Engineer (◈ Standard, 3 SP)
+- ✅ Build CI smoke-probe suite scaffold for operator-flow probes — Devops Engineer (◉ Deep, 5 SP)
+- ✅ Update CHANGELOG.md and INSTALL.md for observability + CI smoke + rate-limit hardening — Devops Engineer (⚡ Quick, 2 SP)
+- ✅ Doc-grounding verification for sprint 16 docs — Qa Engineer (⚡ Quick, 2 SP)
+
+---

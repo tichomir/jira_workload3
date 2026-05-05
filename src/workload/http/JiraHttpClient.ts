@@ -9,6 +9,10 @@ import type {
 
 const ATLASSIAN_TOKEN_URL = 'https://auth.atlassian.com/oauth/token';
 
+const RATE_LIMIT_MAX_RETRIES = 4;
+const RATE_LIMIT_BASE_MS = 1000;
+const RATE_LIMIT_MAX_MS = 8000;
+
 interface TokenRefreshResponse {
   access_token: string;
   refresh_token: string;
@@ -17,6 +21,18 @@ interface TokenRefreshResponse {
 }
 
 export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
+export type SleepFn = (ms: number) => Promise<void>;
+
+export class RateLimitedError extends Error {
+  readonly endpoint: string;
+  readonly attempts: number;
+  constructor(endpoint: string, attempts: number) {
+    super(`[rate-limit] endpoint=${endpoint} exhausted after ${attempts} attempts`);
+    this.name = 'RateLimitedError';
+    this.endpoint = endpoint;
+    this.attempts = attempts;
+  }
+}
 
 // One instance per connectionId — all backup-engine callers for the same site share state.
 const instances = new Map<string, JiraHttpClient>();
@@ -25,24 +41,34 @@ export class JiraHttpClient implements IJiraHttpClient {
   private readonly connectionId: string;
   private refreshPromise: Promise<void> | null = null;
   private readonly _fetch: FetchFn;
+  private readonly _sleep: SleepFn;
 
-  private constructor(connectionId: string, fetchFn: FetchFn) {
+  private constructor(connectionId: string, fetchFn: FetchFn, sleepFn: SleepFn) {
     this.connectionId = connectionId;
     this._fetch = fetchFn;
+    this._sleep = sleepFn;
   }
 
   static forConnection(connectionId: string): JiraHttpClient {
     if (!instances.has(connectionId)) {
       instances.set(
         connectionId,
-        new JiraHttpClient(connectionId, globalThis.fetch.bind(globalThis))
+        new JiraHttpClient(
+          connectionId,
+          globalThis.fetch.bind(globalThis),
+          (ms) => new Promise(resolve => setTimeout(resolve, ms))
+        )
       );
     }
     return instances.get(connectionId)!;
   }
 
-  static _createForTesting(connectionId: string, fetchFn: FetchFn): JiraHttpClient {
-    const instance = new JiraHttpClient(connectionId, fetchFn);
+  static _createForTesting(
+    connectionId: string,
+    fetchFn: FetchFn,
+    sleepFn: SleepFn = () => Promise.resolve()
+  ): JiraHttpClient {
+    const instance = new JiraHttpClient(connectionId, fetchFn, sleepFn);
     instances.set(connectionId, instance);
     return instance;
   }
@@ -105,7 +131,7 @@ export class JiraHttpClient implements IJiraHttpClient {
       const { issues } = response;
 
       console.log(
-        `[search] endpoint=search/jql project=${projectKey} page=${page} count=${issues.length}`
+        `[search] endpoint=search/jql project=${projectKey} page=${page} pageSize=${maxResults} returnedCount=${issues.length}`
       );
 
       allIssues.push(...issues);
@@ -205,15 +231,66 @@ export class JiraHttpClient implements IJiraHttpClient {
 
   private async _request(url: string, init: RequestInit = {}): Promise<Response> {
     const creds = this._readCredentials();
-    const response = await this._fetch(url, this._buildInit(init, creds.accessToken));
+    let response = await this._fetch(url, this._buildInit(init, creds.accessToken));
 
     if (response.status === 401) {
       await this._refresh();
       const refreshed = this._readCredentials();
-      return this._fetch(url, this._buildInit(init, refreshed.accessToken));
+      response = await this._fetch(url, this._buildInit(init, refreshed.accessToken));
+    }
+
+    if (response.status === 429) {
+      const endpoint = this._extractEndpoint(url);
+      response = await this._retryWithBackoff(url, init, response, endpoint);
     }
 
     return response;
+  }
+
+  private async _retryWithBackoff(
+    url: string,
+    init: RequestInit,
+    firstResponse: Response,
+    endpoint: string
+  ): Promise<Response> {
+    let response = firstResponse;
+    for (let attempt = 1; attempt <= RATE_LIMIT_MAX_RETRIES; attempt++) {
+      const delayMs = this._computeRetryDelay(response, attempt);
+      console.log(`[rate-limit] attempt=${attempt} delayMs=${delayMs} endpoint=${endpoint}`);
+      await this._sleep(delayMs);
+      const creds = this._readCredentials();
+      response = await this._fetch(url, this._buildInit(init, creds.accessToken));
+      if (response.status !== 429) {
+        return response;
+      }
+    }
+    throw new RateLimitedError(endpoint, RATE_LIMIT_MAX_RETRIES);
+  }
+
+  private _computeRetryDelay(response: Response, attempt: number): number {
+    const retryAfter = response.headers.get('Retry-After');
+    if (retryAfter !== null) {
+      const seconds = parseInt(retryAfter, 10);
+      if (!isNaN(seconds)) {
+        return seconds * 1000;
+      }
+      const date = new Date(retryAfter);
+      if (!isNaN(date.getTime())) {
+        return Math.max(0, date.getTime() - Date.now());
+      }
+    }
+    const base = RATE_LIMIT_BASE_MS * Math.pow(2, attempt - 1);
+    const capped = Math.min(base, RATE_LIMIT_MAX_MS);
+    const jitter = capped * 0.2 * (Math.random() * 2 - 1);
+    return Math.round(capped + jitter);
+  }
+
+  private _extractEndpoint(url: string): string {
+    try {
+      return new URL(url).pathname;
+    } catch {
+      return url;
+    }
   }
 
   private async _refresh(): Promise<void> {

@@ -48,7 +48,7 @@ export async function runPermissionProbes(connectionId: string): Promise<ProbeRe
     const remediationNeeded = status === 403;
 
     console.log(
-      `[permission-probe] endpoint=${path} status=${status} duration_ms=${duration_ms}`
+      `[permission-probe] connectionId=${connectionId} endpoint=${path} status=${status} duration_ms=${duration_ms}`
     );
 
     return { endpoint: path, status, duration_ms, remediationNeeded, checkedAt };

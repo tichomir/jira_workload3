@@ -71,10 +71,13 @@ export async function handleCreatePolicy(req: Request, res: Response): Promise<v
       );
       const errors = parseResult.queries[0]?.errors ?? [];
       if (errors.length > 0) {
+        console.log(`[jql-validate] connectionId=${body.connectionId} outcome=invalid errorsCount=${errors.length}`);
         res.status(400).json({ error: 'invalid_jql', details: parseResult });
         return;
       }
+      console.log(`[jql-validate] connectionId=${body.connectionId} outcome=valid`);
     } catch (err) {
+      console.log(`[jql-validate] connectionId=${body.connectionId} outcome=error`);
       res.status(400).json({
         error: 'jql_parse_failed',
         message: err instanceof Error ? err.message : String(err),

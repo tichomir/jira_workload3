@@ -79,9 +79,9 @@ export class JiraHttpClient {
       return this.refreshPromise;
     }
 
-    console.log(`[auth-refresh] connectionId=${this.connectionId} mutex-acquire`);
+    console.log(`[auth-refresh] connectionId=${this.connectionId} mutex=acquire`);
     this.refreshPromise = this._performRefresh().finally(() => {
-      console.log(`[auth-refresh] connectionId=${this.connectionId} mutex-release`);
+      console.log(`[auth-refresh] connectionId=${this.connectionId} mutex=release`);
       this.refreshPromise = null;
     });
 

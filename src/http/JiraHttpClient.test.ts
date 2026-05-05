@@ -144,7 +144,7 @@ describe('JiraHttpClient — single-flight refresh mutex', () => {
     expect(row.refreshToken).toBe(NEW_REFRESH_TOKEN);
   });
 
-  it('emits [auth-refresh] mutex-acquire, token-rotated, and mutex-release log lines', async () => {
+  it('emits [auth-refresh] mutex=acquire, token-rotated, and mutex=release log lines', async () => {
     const mockFetch = makeMockFetch();
     const client = JiraHttpClient._createForTesting(TEST_CONN_ID, mockFetch);
 
@@ -154,9 +154,9 @@ describe('JiraHttpClient — single-flight refresh mutex', () => {
       )
     );
 
-    expect(logs.some(l => l.includes('[auth-refresh]') && l.includes('mutex-acquire'))).toBe(true);
+    expect(logs.some(l => l.includes('[auth-refresh]') && l.includes('mutex=acquire'))).toBe(true);
     expect(logs.some(l => l.includes('[auth-refresh]') && l.includes('token-rotated'))).toBe(true);
-    expect(logs.some(l => l.includes('[auth-refresh]') && l.includes('mutex-release'))).toBe(true);
+    expect(logs.some(l => l.includes('[auth-refresh]') && l.includes('mutex=release'))).toBe(true);
 
     // Every log line must include the connectionId
     const authLogs = logs.filter(l => l.includes('[auth-refresh]'));

@@ -382,7 +382,7 @@ The contract is captured verbatim as `PAGINATION_TERMINATION_CONTRACT` in
 
 Emitted **once per pagination request** to `POST /rest/api/3/search/jql`.
 
-**Verbatim format** (source: `src/workload/http/JiraHttpClient.ts:107-109`):
+**Verbatim format** (source: `src/workload/http/JiraHttpClient.ts:134`):
 
 ```
 [search] endpoint=search/jql project=<projectKey> page=<page> count=<count>
@@ -2282,6 +2282,7 @@ The Platform Stub exposes four endpoint groups. All paths are mounted under
 | `POST` | `/api/restore-jobs` | Create and launch a restore job |
 | `GET` | `/api/restore-jobs/:id/events` | SSE stream of restore phase events for a job |
 | `GET` | `/api/restore-jobs/trash-check` | Pre-flight trash-window check for selected project keys |
+| `GET` | `/api/backup-points/:id/sdi-teaser` | SDI aggregate summary (issue/project counts, GDPR/PCI DSS regulation tags) for a backup point |
 | `POST` | `/api/restores` | _(Legacy stub — superseded by `/api/restore-jobs`)_ |
 | `GET` | `/api/restores/:id` | _(Legacy stub — superseded by `/api/restore-jobs`)_ |
 
@@ -2869,3 +2870,539 @@ When `issueCount === 0`, the badge is replaced by "No sensitive data detected in
 - **Scan failures are non-halting.** A failure to scan an individual attachment
   (e.g. decode error) is logged and counted as a scan error but does not halt the
   snapshot job. The manifest is still finalized.
+
+---
+
+## Structured Logging
+
+### Overview
+
+All observability-critical events in the Jira Cloud workload are emitted as
+structured log lines written to `console.log`. Each line carries a bracketed tag
+as its first token, followed by a sequence of `key=value` pairs. This format is
+parseable by log-aggregation tools and searchable by tag prefix.
+
+Six tags are defined for Phase 1. Every implementation task in Sprint 16 codes
+against the schemas in this section — no ad-hoc log-line formats are permitted
+for these observability events.
+
+### Common Field Definitions
+
+These fields appear across multiple tags. Use the same names and value shapes
+wherever a field is applicable.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `correlationId` | `string` (UUID or job ID) | Ties all log lines for a single backup job or restore job together. Set to `backupPointId` for backup operations; `jobId` for restore operations; `requestId` for per-request operations. |
+| `connectionId` | `string` (UUID) | Atlassian site connection being operated on. |
+| `cloudId` | `string` | Atlassian cloud site ID; included where relevant for multi-site disambiguation. |
+| `durationMs` | `number` | Wall-clock milliseconds for the operation. Omitted for instantaneous state transitions (e.g. mutex acquire). |
+| `outcome` | `string` | `ok` \| `error` \| `skip`. `ok` = succeeded; `error` = failed with an error; `skip` = deliberately skipped. |
+| `ts` | `string` (ISO-8601) | Emission timestamp. Optional in Phase 1 (console.log timestamps are provided by the runtime); include when the log sink does not add timestamps automatically. |
+
+### Tag Schemas
+
+#### `[search]`
+
+**When:** Emitted once per pagination request to `POST /rest/api/3/search/jql`
+during the Issue phase of a backup job.
+
+**Implementation source:** `src/workload/http/JiraHttpClient.ts` — `enumerateIssues`.
+
+**Format:**
+
+```
+[search] endpoint=search/jql project=<projectKey> page=<page> pageSize=<pageSize> returnedCount=<returnedCount>
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `endpoint` | `string` | Always `search/jql` — confirms the non-deprecated path. |
+| `project` | `string` | Jira project key for the JQL query being paginated. |
+| `page` | `number` | 1-based page number in the current enumeration run. |
+| `pageSize` | `number` | `maxResults` value used in the JQL request. |
+| `returnedCount` | `number` | Number of issues returned in this page (`issues.length`). |
+
+**Example — 3-page run, project PROJ, 243 issues, maxResults=100:**
+
+```
+[search] endpoint=search/jql project=PROJ page=1 pageSize=100 returnedCount=100
+[search] endpoint=search/jql project=PROJ page=2 pageSize=100 returnedCount=100
+[search] endpoint=search/jql project=PROJ page=3 pageSize=100 returnedCount=43
+```
+
+Pagination terminates after page 3 because `returnedCount(43) < pageSize(100)`.
+
+**TypeScript shape** (`src/workload/snapshot/types.ts`):
+
+```typescript
+interface SearchLogLine {
+  tag:           '[search]';
+  endpoint:      'search/jql';
+  project:       string;
+  page:          number;
+  pageSize:      number;
+  returnedCount: number;
+}
+```
+
+---
+
+#### `[field-context]`
+
+**When:** Emitted once per field during the CustomField / FieldConfiguration
+capture phase. Two variants: `skip` (system fields) and `fetch` (custom fields).
+
+**Implementation source:** `src/workload/backup/discoverFieldContexts.ts`.
+
+**Format — skip (system field, `custom: false`):**
+
+```
+[field-context] skip field_id=<id> reason=system-field
+```
+
+**Format — fetch (custom field, `custom: true`):**
+
+```
+[field-context] fetch field_id=<id> contextCount=<n>
+```
+
+| Field | Type | Present in | Description |
+|-------|------|-----------|-------------|
+| `op` | `string` | Both | `skip` or `fetch`. |
+| `field_id` | `string` | Both | Atlassian field ID (e.g. `customfield_10001`). |
+| `reason` | `string` | `skip` only | Always `system-field`. |
+| `contextCount` | `number` | `fetch` only | Number of field contexts returned by `GET /rest/api/3/field/{id}/context`. |
+
+**Constraint:** `GET /rest/api/3/field/{id}/context` is called only for
+`custom: true` fields. Every `custom: false` field produces a `skip` line and
+is never passed to the context endpoint (T2 §6 Constraint 7, T3 §4.2).
+
+**TypeScript shape** (`src/workload/snapshot/types.ts`):
+
+```typescript
+type FieldContextLogLine =
+  | { tag: '[field-context]'; op: 'skip'; field_id: string; reason: 'system-field' }
+  | { tag: '[field-context]'; op: 'fetch'; field_id: string; contextCount: number };
+```
+
+---
+
+#### `[permission-probe]`
+
+**When:** Emitted once per endpoint during a permission-validation probe run.
+Probes fire after connection creation and on demand.
+
+**Implementation source:** `src/probes/permissionProbes.ts`.
+
+**Format:**
+
+```
+[permission-probe] endpoint=<path> status=<httpStatus> durationMs=<ms> outcome=<ok|error|remediation_needed>
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `endpoint` | `string` | The probed path, e.g. `/rest/api/3/myself`. One of the four Phase 1 probe paths. |
+| `status` | `number` | HTTP status returned by Atlassian. `0` when the request failed (network error or timeout). |
+| `durationMs` | `number` | Wall-clock milliseconds for the probe request. |
+| `outcome` | `string` | `ok` (2xx), `error` (network failure or 5xx), `remediation_needed` (403 — missing scope). |
+
+**Probe paths (Phase 1):**
+
+| Path | Scope verified |
+|------|---------------|
+| `/rest/api/3/myself` | Identity / basic read access |
+| `/rest/api/3/field` | Custom field enumeration |
+| `/rest/agile/1.0/board` | Board read access |
+| `/rest/api/3/workflow/search` | Workflow read access |
+
+**Examples:**
+
+```
+[permission-probe] endpoint=/rest/api/3/myself status=200 durationMs=120 outcome=ok
+[permission-probe] endpoint=/rest/agile/1.0/board status=403 durationMs=95 outcome=remediation_needed
+[permission-probe] endpoint=/rest/api/3/workflow/search status=0 durationMs=5001 outcome=error
+```
+
+**Remediation rule:** When `outcome=remediation_needed`, the Connections list UI
+surfaces a 403 remediation banner explaining which scope is missing. The banner
+is keyed on the `endpoint` field.
+
+**TypeScript shape** (`src/probes/permissionProbes.ts`):
+
+```typescript
+interface PermissionProbeLogLine {
+  tag:        '[permission-probe]';
+  endpoint:   string;
+  status:     number;
+  durationMs: number;
+  outcome:    'ok' | 'error' | 'remediation_needed';
+}
+```
+
+---
+
+#### `[jql-validate]`
+
+**When:** Emitted once per `POST /api/policies` call that includes a non-empty
+`jqlFilter`. The log line records the result of the JQL validation request to
+`POST /rest/api/3/jql/parse` before the policy is persisted.
+
+**Implementation source:** `src/routes/policies.ts`.
+
+**Format — valid JQL:**
+
+```
+[jql-validate] connectionId=<id> outcome=ok durationMs=<ms>
+```
+
+**Format — invalid JQL:**
+
+```
+[jql-validate] connectionId=<id> outcome=error durationMs=<ms> errorCount=<n>
+```
+
+**Format — JQL absent (no filter configured):**
+
+```
+[jql-validate] connectionId=<id> outcome=skip reason=no-filter
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `connectionId` | `string` | Connection for which the policy is being set. |
+| `outcome` | `string` | `ok` (JQL valid), `error` (JQL invalid — request rejected with 400), `skip` (no `jqlFilter` in request). |
+| `durationMs` | `number` | Wall-clock milliseconds for the `/rest/api/3/jql/parse` call. Omitted for `skip`. |
+| `errorCount` | `number` | Number of parse errors returned by Atlassian. Present only when `outcome=error`. |
+
+**Examples:**
+
+```
+[jql-validate] connectionId=550e8400 outcome=ok durationMs=88
+[jql-validate] connectionId=550e8400 outcome=error durationMs=102 errorCount=1
+[jql-validate] connectionId=550e8400 outcome=skip reason=no-filter
+```
+
+**TypeScript shape** (`src/routes/policies.ts`):
+
+```typescript
+type JqlValidateLogLine =
+  | { tag: '[jql-validate]'; connectionId: string; outcome: 'ok';    durationMs: number }
+  | { tag: '[jql-validate]'; connectionId: string; outcome: 'error'; durationMs: number; errorCount: number }
+  | { tag: '[jql-validate]'; connectionId: string; outcome: 'skip';  reason: 'no-filter' };
+```
+
+---
+
+#### `[restore]`
+
+**When:** Emitted at each phase transition and on phase failure in the restore
+orchestrator. One line per SSE phase event in the dependency chain.
+
+**Implementation source:** `src/workload/restore/RestoreOrchestrator.ts`.
+
+**Format — phase started:**
+
+```
+[restore] jobId=<id> event=phase_started phase=<phase>
+```
+
+**Format — phase completed:**
+
+```
+[restore] jobId=<id> event=phase_completed phase=<phase> restoredCount=<n> errorCount=<n> durationMs=<ms>
+```
+
+**Format — phase failed (dependency_phase_failed):**
+
+```
+[restore] jobId=<id> event=job_failed phase=<phase> errorCode=dependency_phase_failed durationMs=<ms>
+```
+
+**Format — heartbeat (emitted every ≤10 s during long-running phases):**
+
+```
+[restore] jobId=<id> event=heartbeat phase=<phase> processed=<n> total=<n|null>
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `jobId` | `string` | Restore job ID (`correlationId` for restore operations). |
+| `event` | `string` | One of `phase_started`, `phase_completed`, `job_failed`, `heartbeat`, `job_completed`. |
+| `phase` | `string` | Restore phase name (matches `RestorePhase` enum string values). |
+| `restoredCount` | `number` | Items successfully restored in this phase. Present on `phase_completed`. |
+| `errorCount` | `number` | Item-level errors in this phase. Present on `phase_completed` and `job_failed`. |
+| `durationMs` | `number` | Wall-clock milliseconds for the phase. Present on `phase_completed` and `job_failed`. |
+| `processed` | `number` | Items processed so far in the current phase. Present on `heartbeat`. |
+| `total` | `number \| null` | Total items in the current phase; `null` while total is unknown. Present on `heartbeat`. |
+| `errorCode` | `string` | Always `dependency_phase_failed` when `event=job_failed`. |
+
+**Phase name values** (from `RestorePhase` enum):
+
+```
+site-reference-data | project | workflow | custom-field |
+board | sprint | issue | comment-attachment-subtask-issuelink
+```
+
+**Examples:**
+
+```
+[restore] jobId=rj-9f3a event=phase_started phase=site-reference-data
+[restore] jobId=rj-9f3a event=phase_completed phase=site-reference-data restoredCount=0 errorCount=0 durationMs=340
+[restore] jobId=rj-9f3a event=phase_started phase=project
+[restore] jobId=rj-9f3a event=heartbeat phase=issue processed=42 total=150
+[restore] jobId=rj-9f3a event=job_failed phase=board errorCode=dependency_phase_failed durationMs=12
+[restore] jobId=rj-9f3a event=job_completed phase=comment-attachment-subtask-issuelink restoredCount=47 errorCount=0 durationMs=4210
+```
+
+**TypeScript shape** (`src/workload/restore/RestoreOrchestrator.ts`):
+
+```typescript
+type RestoreLogLine =
+  | { tag: '[restore]'; jobId: string; event: 'phase_started';   phase: string }
+  | { tag: '[restore]'; jobId: string; event: 'phase_completed'; phase: string; restoredCount: number; errorCount: number; durationMs: number }
+  | { tag: '[restore]'; jobId: string; event: 'job_failed';      phase: string; errorCode: 'dependency_phase_failed'; durationMs: number }
+  | { tag: '[restore]'; jobId: string; event: 'heartbeat';       phase: string; processed: number; total: number | null }
+  | { tag: '[restore]'; jobId: string; event: 'job_completed';   phase: string; restoredCount: number; errorCount: number; durationMs: number };
+```
+
+---
+
+#### `[auth-refresh]`
+
+**When:** Emitted at three points during a rotating-refresh-token cycle inside
+`JiraHttpClient`. The mutex acquire line fires before any token-exchange HTTP
+call; the outcome line fires after the exchange succeeds or fails; the release
+line fires unconditionally in the `finally` block.
+
+**Implementation source:** `src/workload/http/JiraHttpClient.ts` — `_refresh`.
+
+**Format — mutex acquire (concurrent callers queue here):**
+
+```
+[auth-refresh] connectionId=<id> mutex=acquire
+```
+
+**Format — exchange outcome:**
+
+```
+[auth-refresh] connectionId=<id> outcome=<success|failure>
+```
+
+**Format — mutex release:**
+
+```
+[auth-refresh] connectionId=<id> mutex=release
+```
+
+**Format — concurrent caller queued behind in-flight refresh:**
+
+```
+[auth-refresh] connectionId=<id> mutex=queued
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `connectionId` | `string` | The connection whose credential is being refreshed. |
+| `mutex` | `string` | `acquire` — this caller is starting the refresh; `release` — refresh complete (success or failure); `queued` — this caller joined the existing in-flight refresh rather than starting a new one. |
+| `outcome` | `string` | `success` — both tokens written atomically; `failure` — token endpoint returned non-2xx or threw. |
+
+**Sequencing invariant:** For a given `connectionId`, every `mutex=acquire` is
+followed by exactly one `outcome=<success|failure>` and then one `mutex=release`.
+Concurrent callers each emit `mutex=queued` and then see the shared result without
+emitting their own `acquire`/`release` pair.
+
+**Examples — single caller success:**
+
+```
+[auth-refresh] connectionId=550e8400 mutex=acquire
+[auth-refresh] connectionId=550e8400 outcome=success
+[auth-refresh] connectionId=550e8400 mutex=release
+```
+
+**Examples — two concurrent callers, second queued:**
+
+```
+[auth-refresh] connectionId=550e8400 mutex=acquire
+[auth-refresh] connectionId=550e8400 mutex=queued
+[auth-refresh] connectionId=550e8400 outcome=success
+[auth-refresh] connectionId=550e8400 mutex=release
+```
+
+**TypeScript shape** (`src/workload/http/JiraHttpClient.ts`):
+
+```typescript
+type AuthRefreshLogLine =
+  | { tag: '[auth-refresh]'; connectionId: string; mutex: 'acquire' | 'release' | 'queued' }
+  | { tag: '[auth-refresh]'; connectionId: string; outcome: 'success' | 'failure' };
+```
+
+---
+
+### Summary Table
+
+| Tag | File | Trigger | Rate |
+|-----|------|---------|------|
+| `[search]` | `src/workload/http/JiraHttpClient.ts` | Each `POST /rest/api/3/search/jql` page request | 1× per page per project |
+| `[field-context]` | `src/workload/backup/discoverFieldContexts.ts` | Each field processed in CustomField phase | 1× per field |
+| `[permission-probe]` | `src/probes/permissionProbes.ts` | Each probe endpoint checked | 1× per endpoint per probe run |
+| `[jql-validate]` | `src/routes/policies.ts` | Each `POST /api/policies` | 1× per policy write attempt |
+| `[restore]` | `src/workload/restore/RestoreOrchestrator.ts` | Each phase transition + heartbeat | 2–4× per phase + ≤1/10 s during long phases |
+| `[auth-refresh]` | `src/workload/http/JiraHttpClient.ts` | Each 401-triggered token refresh | 3 lines per refresh cycle (acquire + outcome + release) |
+
+---
+
+## Rate-Limit Handling
+
+### Overview
+
+Atlassian enforces per-connection rate limits and returns `HTTP 429` with a
+`Retry-After` header when a client exceeds the limit. All authenticated
+outbound requests from `JiraHttpClient` pass through a single exponential-backoff
+retry loop. The loop is implemented in the `_request` method of
+`src/workload/http/JiraHttpClient.ts` and applies uniformly to `getJson`,
+`searchJql`, `downloadAttachment`, and all derived convenience methods.
+
+This specification is the contract all Sprint 16 implementation tasks code
+against. No other backoff parameters are permitted.
+
+### Backoff State Machine
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│  _request(url, init)                                           │
+│                                                                │
+│  attempt = 1                                                   │
+│  ┌─────────────────────────────────────────────────────┐       │
+│  │  HTTP call                                          │       │
+│  │       │                                             │       │
+│  │   status?                                           │       │
+│  │  ├─ 2xx / non-429 → return response                │       │
+│  │  └─ 429 ──────────────────────────────────────┐    │       │
+│  │                                               │    │       │
+│  │  attempt > RATE_LIMIT_MAX_RETRIES?            │    │       │
+│  │  ├─ yes → throw RateLimitedError              │    │       │
+│  │  └─ no  → compute delay                       │    │       │
+│  │           ├─ retryAfterMs = parse Retry-After │    │       │
+│  │           │   header (seconds → ms)           │    │       │
+│  │           ├─ backoffMs = min(                 │    │       │
+│  │           │   RATE_LIMIT_BASE_MS*2^(attempt-1)│    │       │
+│  │           │   RATE_LIMIT_MAX_MS)              │    │       │
+│  │           ├─ jitter = uniform random          │    │       │
+│  │           │   in [-0.2 * backoffMs,           │    │       │
+│  │           │        +0.2 * backoffMs]          │    │       │
+│  │           └─ delayMs = max(retryAfterMs,      │    │       │
+│  │                           backoffMs + jitter) │    │       │
+│  │                                               │    │       │
+│  │  emit [rate-limit] log line                   │    │       │
+│  │  sleep(delayMs)                               │    │       │
+│  │  attempt++                                    │    │       │
+│  │  loop ─────────────────────────────────────── ┘    │       │
+│  └─────────────────────────────────────────────────────┘       │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### Backoff Parameters
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `RATE_LIMIT_BASE_MS` | `1 000` | Initial delay before the first retry (1 s). |
+| `RATE_LIMIT_MAX_MS` | `8 000` | Cap on the computed exponential delay before jitter (8 s). |
+| Jitter factor | `0.2` | ±20% uniform random jitter applied to the capped backoff (inline constant). |
+| `RATE_LIMIT_MAX_RETRIES` | `4` | Maximum number of retry attempts. After the 4th attempt fails, `RateLimitedError` is thrown. |
+
+**Delay formula for attempt N (1-based):**
+
+```
+backoffMs  = min(RATE_LIMIT_BASE_MS × 2^(N-1), RATE_LIMIT_MAX_MS)
+jitter     = uniform_random(−0.2 × backoffMs, +0.2 × backoffMs)
+delayMs    = max(retryAfterMs, backoffMs + jitter)
+```
+
+Where `retryAfterMs` is the parsed `Retry-After` header value in milliseconds
+(`0` when the header is absent or unparseable).
+
+**Computed delays (no Retry-After, no jitter, for illustration):**
+
+| Attempt | backoffMs | Effective delay |
+|---------|-----------|-----------------|
+| 1 | 1 000 | ~1 000 ms |
+| 2 | 2 000 | ~2 000 ms |
+| 3 | 4 000 | ~4 000 ms |
+| 4 | 8 000 | ~8 000 ms |
+| 5 | — | `RateLimitedError` thrown |
+
+### Retry-After Header Precedence
+
+1. Parse the `Retry-After` response header as an integer number of seconds.
+2. Convert to milliseconds: `retryAfterMs = parseInt(header, 10) * 1000`.
+3. If the header is absent, malformed, or `<= 0`, treat `retryAfterMs = 0`.
+4. `delayMs = max(retryAfterMs, backoffMs + jitter)`.
+
+The `Retry-After` value takes precedence when it is **longer** than the computed
+backoff. When the header value is shorter, the computed backoff is used (never
+sleep less than the exponential floor). This prevents thundering-herd re-bursts
+immediately after the server's rate-limit window resets.
+
+### Error Type
+
+```typescript
+// src/workload/http/JiraHttpClient.ts
+export class RateLimitedError extends Error {
+  readonly endpoint: string;
+  readonly attempts: number;   // always RATE_LIMIT_MAX_RETRIES
+
+  constructor(endpoint: string, attempts: number) {
+    super(`[rate-limit] endpoint=${endpoint} exhausted after ${attempts} attempts`);
+    this.name = 'RateLimitedError';
+    this.endpoint = endpoint;
+    this.attempts = attempts;
+  }
+}
+```
+
+Callers that need to distinguish a rate-limit failure from other HTTP errors
+check `error instanceof RateLimitedError`.
+
+### Structured Log Line for 429 Retries
+
+Each 429 response that triggers a retry emits a `[rate-limit]` log line before
+sleeping. This is a seventh observability tag, introduced here alongside the
+backoff spec:
+
+**Format:**
+
+```
+[rate-limit] attempt=<n> delayMs=<ms> endpoint=<path>
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `attempt` | `number` | Retry attempt number (1 = first retry after the initial failure). |
+| `delayMs` | `number` | Actual computed sleep duration (after jitter and Retry-After precedence). |
+| `endpoint` | `string` | URL pathname of the request (e.g. `/rest/api/3/search/jql`). |
+
+**Example:**
+
+```
+[rate-limit] attempt=1 delayMs=1183 endpoint=/rest/api/3/search/jql
+[rate-limit] attempt=2 delayMs=2241 endpoint=/rest/api/3/search/jql
+```
+
+### Design Constraints
+
+- **Backoff applies only to HTTP 429.** Other 4xx and 5xx responses are not
+  retried by the backoff loop. A 401 triggers the token-refresh path (separate
+  mechanism); other errors are propagated immediately to the caller.
+- **Only the backup-engine `JiraHttpClient`** (`src/workload/http/JiraHttpClient.ts`)
+  implements the backoff loop. The OAuth-layer `JiraHttpClient`
+  (`src/http/JiraHttpClient.ts`) does not need rate-limit retry (token-exchange
+  calls are rare and not subject to per-connection API rate limits).
+- **Mutex interaction:** If a 429 fires during a token-refresh call, the refresh
+  fails immediately (no backoff inside the refresh path). The calling `_request`
+  wraps the failure and propagates it without entering the retry loop for
+  token-endpoint calls.
+- **No global state.** The retry loop is scoped to a single `_request` invocation.
+  Concurrent requests each maintain their own `attempt` counter; there is no
+  shared backoff state across concurrent in-flight calls.
