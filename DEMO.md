@@ -27,9 +27,13 @@ See [INSTALL.md](INSTALL.md) for full environment setup and OAuth configuration 
 
 #### Step 1 — Open the Connections page
 
-Navigate to `https://localhost` in your browser. You will land on the
-**Connections** page which shows the WorkloadCard and an (initially empty)
-connections list.
+Navigate to `https://localhost:8443/connections` in your browser
+(podman-compose default — Caddy TLS sidecar on port 8443).
+You will land on the **Connections** page which shows the WorkloadCard and
+an (initially empty) connections list.
+
+> **Direct API path (no Caddy):** `http://localhost:4000/connections`
+> when running `npm run server` without the container stack.
 
 #### Step 2 — Start the OAuth flow
 
@@ -1116,18 +1120,55 @@ npm run server &      # API server on port 4000
 bash scripts/run-smoke-probes.sh
 ```
 
-### Probe 1 — connect-jira-site (OAuth path)
+### Probe 1 — connect-jira-site (OAuth /authorize redirect + direct connection path)
 
 ```bash
 #!/usr/bin/env bash
-# connect-jira-site smoke probe — OAuth path
+# connect-jira-site smoke probe
+#
+# Step [1/2] assert GET /api/oauth/authorize returns a 302 redirect to
+#   https://auth.atlassian.com/authorize with PKCE S256 and Phase 1 scopes.
+#   Requires ATLASSIAN_CLIENT_ID configured in .env.
+# Step [2/5..5/5] direct POST /api/connections + GET /api/connections assertion
+#   (exercises the connection store without a live Atlassian browser flow).
 set -euo pipefail
 
 PORT=${PORT:-4000}
 BASE="http://localhost:${PORT}"
 SMOKE_CLOUD_ID="smoke-cloud-$(date +%s)"
 
-echo "==> [1/3] Create smoke connection (OAuth mode)"
+echo "==> [1/5] GET /api/oauth/authorize — assert 302 redirect to Atlassian"
+AUTHORIZE_STATUS=$(curl -s -o /dev/null --max-redirs 0 -w '%{http_code}' \
+  "${BASE}/api/oauth/authorize")
+
+[ "${AUTHORIZE_STATUS}" -eq 302 ] \
+  && echo "PASS: GET /api/oauth/authorize returned 302" \
+  || { echo "FAIL: expected 302 got ${AUTHORIZE_STATUS} (is ATLASSIAN_CLIENT_ID set in .env?)"; exit 1; }
+
+AUTHORIZE_URL=$(curl -s -o /dev/null --max-redirs 0 -w '%{redirect_url}' \
+  "${BASE}/api/oauth/authorize")
+
+echo "${AUTHORIZE_URL}" | grep -q 'auth\.atlassian\.com/authorize' \
+  && echo "PASS: redirect target is https://auth.atlassian.com/authorize" \
+  || { echo "FAIL: Location does not contain auth.atlassian.com/authorize: ${AUTHORIZE_URL}"; exit 1; }
+
+echo "==> [2/5] Verify PKCE S256 and Phase 1 scopes in the authorize URL"
+echo "${AUTHORIZE_URL}" | python3 -c "
+import sys, urllib.parse
+url = sys.stdin.read().strip()
+parsed = urllib.parse.urlparse(url)
+params = urllib.parse.parse_qs(parsed.query)
+assert params.get('code_challenge_method') == ['S256'], 'PKCE code_challenge_method=S256 missing'
+assert params.get('response_type') == ['code'], 'response_type=code missing'
+scope = params.get('scope', [''])[0]
+scopes = scope.split()
+for s in ['offline_access', 'read:jira-work', 'write:jira-work', 'manage:jira-project',
+          'write:board-scope:jira-software', 'write:board-scope.admin:jira-software']:
+    assert s in scopes, f'{s} missing from scope set'
+print(f'PASS: PKCE S256 present; {len(scopes)} Phase 1 scopes in authorize URL')
+"
+
+echo "==> [3/5] Create smoke connection (direct API mode)"
 RESPONSE=$(curl -sf -X POST "${BASE}/api/connections" \
   -H 'Content-Type: application/json' \
   -d "{
@@ -1146,7 +1187,7 @@ echo "${RESPONSE}" | grep -q 'connected' \
   && echo "PASS: connection status is connected" \
   || { echo "FAIL: connection status is not connected"; exit 1; }
 
-echo "==> [2/3] Verify connection appears in GET /api/connections"
+echo "==> [4/5] Verify connection appears in GET /api/connections"
 CONNECTIONS=$(curl -sf "${BASE}/api/connections")
 
 echo "${CONNECTIONS}" | python3 -c "
@@ -1158,7 +1199,7 @@ print('PASS: connection found in list' if found else 'FAIL: connection not in li
 sys.exit(0 if found else 1)
 "
 
-echo "==> [3/3] Verify GET /api/connections returns valid JSON"
+echo "==> [5/5] Verify GET /api/connections returns valid JSON"
 echo "${CONNECTIONS}" | python3 -m json.tool > /dev/null \
   && echo "PASS: valid JSON response" \
   || { echo "FAIL: invalid JSON response"; exit 1; }

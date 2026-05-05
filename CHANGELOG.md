@@ -4,6 +4,87 @@ All notable changes are documented here by sprint.
 
 ---
 
+## [Sprint Maintenance] — 2026-05-05 — Fix OAuth token exchange
+
+Resolves the P0 OAuth failure where the authorization flow returned
+`{"error":"token_exchange_failed"}` for every user attempting to connect a Jira site.
+
+### Fixed
+
+#### Token exchange missing `client_secret` — `src/oauth/tokenExchange.ts`
+- Root cause: `exchangeCodeForTokens` never included `client_secret` in the
+  `POST https://auth.atlassian.com/oauth/token` request body. Atlassian treats
+  registered-secret apps as confidential clients and rejects token requests that
+  omit the secret, even when PKCE is used.
+- Fix: `exchangeCodeForTokens` now accepts a `clientSecret: string` parameter and
+  includes `client_secret` in the JSON body alongside `client_id`.
+- `handleCallback` reads `config.atlassianClientSecret` (from `ATLASSIAN_CLIENT_SECRET`
+  env var) and passes it to `exchangeCodeForTokens`. Returns HTTP 500 with
+  `{ error: 'server_misconfigured' }` when the env var is absent, matching the
+  existing guard for `ATLASSIAN_CLIENT_ID` in `authorize.ts`.
+- Tests in `tokenExchange.test.ts` updated: `beforeEach` sets
+  `process.env['ATLASSIAN_CLIENT_SECRET']`; new test `'sends client_secret in the
+  token exchange request body'` asserts the field appears in the captured fetch body.
+
+#### Trust proxy for HTTPS fallback URI — `src/server.ts`
+- `app.set('trust proxy', true)` added after `const app = express()`. Without this,
+  `req.protocol` returned `'http'` when behind the Caddy TLS terminator, making the
+  fallback redirect URI (`${req.protocol}://${req.get('host')}/api/oauth/callback`)
+  use HTTP — which Atlassian rejects.
+- **Recommended:** always set `OAUTH_REDIRECT_URI` explicitly in `.env` to guarantee
+  HTTPS. The trust-proxy fix is a safety net for deployments where the env var is absent.
+
+#### `ATLASSIAN_CLIENT_SECRET` startup guard — `src/server.ts`
+- Server now exits with a FATAL error at startup if `ATLASSIAN_CLIENT_SECRET` is
+  not set, rather than silently starting and failing every OAuth callback. Mirrors
+  the precedent established by the `ATLASSIAN_CLIENT_ID` startup check.
+
+#### `src/config.ts` — centralised env-var loader
+- New module that loads `.env` from the project root at startup (only sets variables
+  not already in the environment so runtime / container overrides are not clobbered).
+- Exposes typed getters: `atlassianClientId`, `atlassianClientSecret`, `oauthRedirectUri`,
+  `port`, `dbPath`, `attachmentDir`.
+- `server.ts`, `authorize.ts`, and `tokenExchange.ts` all read credentials through
+  `config` rather than raw `process.env` strings.
+
+#### `accountId` storage in `connections` table — `src/db/migrations/016_connections_account_id.sql`
+- New migration: `ALTER TABLE connections ADD COLUMN accountId TEXT`.
+- `handleCallback` in `src/oauth/tokenExchange.ts` now fetches `GET https://api.atlassian.com/me`
+  after a successful token exchange and stores the Atlassian `accountId` on the connection row
+  (soft-failure: stores `NULL` if the `/me` call is unavailable).
+- Storing `accountId` enables the Connections list UI to surface the authorizing account identity
+  and provides an audit trail for the credential grant.
+
+#### Connections list displays authorizing account ID — `src/ui/pages/ConnectionsList.tsx`, `src/ui/pages/ConnectionsList.css`
+- `ConnectionRow` interface extended with optional `accountId?: string`.
+- Each connection row now renders "Account: `<accountId>`" beneath the site name when
+  `accountId` is present, giving operators immediate confirmation that OAuth completed for
+  the correct Atlassian account.
+- `.cl__account-id-text` CSS class added in `ConnectionsList.css` for monospace rendering.
+
+### Documentation
+
+- `INSTALL.md §2` — added `DB_PATH` (optional) to the env-var table; updated
+  `ATLASSIAN_CLIENT_SECRET` row to note it is required at startup; clarified
+  `OAUTH_REDIRECT_URI` must use HTTPS.
+- `INSTALL.md §8` — full operations runbook content folded in (was previously a
+  stub link to `docs/OPERATIONS.md`). Covers connection failure, scope drift,
+  refresh-token rotation, JSM-site detection, and the structured log tag reference.
+  Line reference to `_performRefresh` corrected from `:354` to `:_performRefresh`.
+- `docs/OPERATIONS.md` — replaced with a redirect notice pointing to `INSTALL.md §8`;
+  no parallel ops doc remains.
+- `README.md` — quick-links table updated: `docs/OPERATIONS.md` row removed;
+  `INSTALL.md` description updated to mention the operations runbook.
+- `.env.example` — updated to document the two supported `OAUTH_REDIRECT_URI` values
+  (podman-compose path on `:8443` and plain npm path via `caddy run` on `:443`); notes
+  added to clarify required vs optional keys.
+
+### No new environment variables
+`ATLASSIAN_CLIENT_SECRET`, `OAUTH_REDIRECT_URI`, `DB_PATH`, and `DCC_ATTACHMENT_DIR`
+were all already defined in `.env.example`. No new keys are introduced.
+
+---
+
 ## [Sprint Maintenance] — 2026-05-05 — README/INSTALL happy-path repair
 
 Follows only README.md and INSTALL.md from a clean checkout to confirm a new contributor

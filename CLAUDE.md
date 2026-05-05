@@ -943,3 +943,33 @@ No new features. No refactors. Minimal fix only.
 - ✅ Verify doc grounding and end-to-end happy path on clean checkout — Qa Engineer (⚡ Quick, 2 SP)
 
 ---
+### Sprint Maintenance — Fix OAuth token exchange | 2026-05-05 | ⏳ in progress | 20 SP est.
+**Goal:** #2: Cannot excahnge token - authorisation doesn't work
+
+When trying to authorise I am getting the following as a response of the authorization process in GUI: 
+
+{"error":"token_exchange_failed"}
+
+_Sprint started. Role checkpoints below will update as work completes._
+
+---
+### Sprint Maintenance — Fix OAuth token exchange | 2026-05-05 | ✅ done | 26 SP
+**Goal:** #2: Cannot excahnge token - authorisation doesn't work
+
+When trying to authorise I am getting the following as a response of the authorization process in GUI: 
+
+{"error":"token_exchange_failed"}
+
+**Delivered:**
+- ✅ Diagnose token_exchange_failed root cause — Software Architect (◈ Standard, 3 SP)
+- ✅ Fix .env / .env.example loading for OAuth client credentials — Devops Engineer (⚡ Quick, 2 SP)
+- ✅ Fix OAuth token exchange call in backend — Backend Developer (◈ Standard, 3 SP)
+- ✅ Fix GUI error surfacing for OAuth callback — Frontend Developer (⚡ Quick, 2 SP)
+- ✅ Add happy-path + error-path tests for OAuth token exchange — Qa Engineer (◈ Standard, 3 SP)
+- ✅ Resolve carry-forward P0 doc grounding gaps in OPERATIONS / CHANGELOG / DEMO — Devops Engineer (◈ Standard, 3 SP)
+- ✅ Update DEMO.md OAuth connect flow + smoke probe — Frontend Developer (⚡ Quick, 2 SP)
+- ✅ Doc grounding verification across canonical docs — Qa Engineer (⚡ Quick, 2 SP)
+- ✅ Fix: Include client_secret in OAuth token exchange — Software Architect (◈ Standard, 3 SP)
+- ✅ Fix: Enable trust proxy in Express server — Software Architect (◈ Standard, 3 SP)
+
+---

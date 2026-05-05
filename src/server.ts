@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { config } from './config.js';
 import { oauthRouter } from './routes/oauth.js';
 import { connectionsRouter } from './routes/connections.js';
 import { restoresRouter } from './routes/restores.js';
@@ -15,9 +16,22 @@ import { getDb } from './db/database.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.join(__dirname, '..', 'dist');
 
-const app = express();
-const PORT = parseInt(process.env['PORT'] ?? '4000', 10);
+const _clientId = config.atlassianClientId;
+console.log(
+  `[config] ATLASSIAN_CLIENT_ID: ${_clientId ? _clientId.slice(0, 4) + '**** (present)' : 'NOT SET'}`
+);
 
+if (!config.atlassianClientSecret) {
+  console.error(
+    'FATAL: ATLASSIAN_CLIENT_SECRET is not set. Set it in your .env file before starting the server.'
+  );
+  process.exit(1);
+}
+
+const app = express();
+const PORT = config.port;
+
+app.set('trust proxy', true);
 app.use(express.json());
 app.use('/api/oauth', oauthRouter);
 app.use('/api/connections', connectionsRouter);

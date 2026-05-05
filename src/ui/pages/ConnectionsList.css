@@ -178,6 +178,92 @@
   background: #ff991f;
 }
 
+/* ── OAuth callback error banner ────────────────────────── */
+.cl__oauth-error {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+  padding: 16px 20px;
+  background: #ffebe6;
+  border: 1px solid #de350b;
+  border-radius: 8px;
+}
+
+.cl__oauth-error-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.cl__oauth-error-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #de350b;
+  margin: 0 0 6px;
+}
+
+.cl__oauth-error-detail {
+  font-size: 13px;
+  color: #bf2600;
+  margin: 0 0 6px;
+  line-height: 1.5;
+}
+
+.cl__oauth-error-code {
+  font-family: monospace;
+  background: rgba(222, 53, 11, 0.12);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cl__oauth-error-correlation {
+  font-size: 11px;
+  color: #6b778c;
+  margin: 0;
+  line-height: 1.4;
+}
+
+.cl__oauth-error-correlation code {
+  font-family: monospace;
+  font-size: 11px;
+  color: #42526e;
+}
+
+.cl__oauth-error-retry {
+  background: #de350b;
+  border: none;
+  border-radius: 4px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #ffffff;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  align-self: flex-start;
+  transition: background 0.15s ease;
+}
+
+.cl__oauth-error-retry:hover {
+  background: #bf2600;
+}
+
+/* ── Account ID ─────────────────────────────────────────── */
+.cl__account-id {
+  font-size: 12px;
+  color: #6b778c;
+}
+
+.cl__account-id-text {
+  font-family: monospace;
+  font-size: 12px;
+  color: #42526e;
+}
+
 /* ── Loading / error / empty states ───────────────────────── */
 .cl__loading,
 .cl__empty {

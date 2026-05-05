@@ -25,11 +25,10 @@ See [INSTALL.md](INSTALL.md) for full prerequisites, environment setup, and OAut
 
 | Document | Purpose |
 |---|---|
-| [INSTALL.md](INSTALL.md) | Prerequisites, environment setup, and start instructions |
+| [INSTALL.md](INSTALL.md) | Prerequisites, environment setup, OAuth configuration, and operations runbook |
 | [DEMO.md](DEMO.md) | Connect Jira Site walkthrough and machine-readable smoke probes |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Platform/workload boundary, interface contract, design constraints |
 | [CHANGELOG.md](CHANGELOG.md) | Sprint-by-sprint release notes |
-| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Engineer runbook: connection failure, scope drift, refresh-token rotation, JSM-site detection |
 
 ## What is built
 

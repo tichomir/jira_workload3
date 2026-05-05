@@ -1,6 +1,7 @@
 import { randomBytes, createHash } from 'crypto';
 import type { Request, Response } from 'express';
 import { getDb } from '../db/database.js';
+import { config } from '../config.js';
 
 // Full T2 §4.2.2 Phase 1 scope set — both board-scope variants are required
 export const PHASE1_SCOPES = [
@@ -60,7 +61,7 @@ export function buildAuthorizeUrl(
 }
 
 export function handleAuthorize(req: Request, res: Response): void {
-  const clientId = process.env['ATLASSIAN_CLIENT_ID'];
+  const clientId = config.atlassianClientId;
 
   if (!clientId) {
     res.status(500).json({ error: 'ATLASSIAN_CLIENT_ID is not configured' });
@@ -68,8 +69,10 @@ export function handleAuthorize(req: Request, res: Response): void {
   }
 
   const redirectUri =
-    process.env['OAUTH_REDIRECT_URI'] ??
+    config.oauthRedirectUri ||
     `${req.protocol}://${req.get('host')}/api/oauth/callback`;
+
+  console.log(`[oauth-authorize] redirectUri=${redirectUri}`);
 
   const { codeVerifier, codeChallenge } = generatePKCE();
   const state = base64urlEncode(randomBytes(16));
@@ -79,8 +82,8 @@ export function handleAuthorize(req: Request, res: Response): void {
   const expiresAt = new Date(now.getTime() + STATE_TTL_MS).toISOString();
 
   db.prepare(
-    'INSERT INTO oauth_state (state, codeVerifier, clientId, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?)'
-  ).run(state, codeVerifier, clientId, now.toISOString(), expiresAt);
+    'INSERT INTO oauth_state (state, codeVerifier, clientId, createdAt, expiresAt, redirectUri) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(state, codeVerifier, clientId, now.toISOString(), expiresAt, redirectUri);
 
   const authorizeUrl = buildAuthorizeUrl(clientId, redirectUri, state, codeChallenge);
   res.redirect(302, authorizeUrl);

@@ -1,0 +1,1 @@
+ALTER TABLE oauth_state ADD COLUMN redirectUri TEXT NOT NULL DEFAULT '';

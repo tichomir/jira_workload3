@@ -1,9 +1,11 @@
 import { randomUUID } from 'crypto';
 import type { Request, Response } from 'express';
 import { getDb } from '../db/database.js';
+import { config } from '../config.js';
 
 const ATLASSIAN_TOKEN_URL = 'https://auth.atlassian.com/oauth/token';
 const ATLASSIAN_RESOURCES_URL = 'https://api.atlassian.com/oauth/token/accessible-resources';
+const ATLASSIAN_ME_URL = 'https://api.atlassian.com/me';
 
 export type FetchFn = (url: string, init?: RequestInit) => Promise<globalThis.Response>;
 
@@ -15,6 +17,18 @@ export function _setFetchForTesting(fn: FetchFn): void {
 
 export function _resetFetch(): void {
   _fetchFn = globalThis.fetch.bind(globalThis);
+}
+
+export class TokenExchangeError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly atlassianError: string,
+    public readonly atlassianErrorDescription: string,
+    public readonly atlassianBody: unknown
+  ) {
+    super(`Token exchange failed: HTTP ${status}${atlassianError ? ` (${atlassianError})` : ''}`);
+    this.name = 'TokenExchangeError';
+  }
 }
 
 interface TokenResponse {
@@ -32,10 +46,17 @@ interface AccessibleResource {
   avatarUrl: string;
 }
 
+interface MeResponse {
+  accountId: string;
+  displayName?: string;
+  emailAddress?: string;
+}
+
 export async function exchangeCodeForTokens(
   code: string,
   codeVerifier: string,
   clientId: string,
+  clientSecret: string,
   redirectUri: string
 ): Promise<TokenResponse> {
   const resp = await _fetchFn(ATLASSIAN_TOKEN_URL, {
@@ -44,6 +65,7 @@ export async function exchangeCodeForTokens(
     body: JSON.stringify({
       grant_type: 'authorization_code',
       client_id: clientId,
+      client_secret: clientSecret,
       code,
       redirect_uri: redirectUri,
       code_verifier: codeVerifier,
@@ -51,7 +73,19 @@ export async function exchangeCodeForTokens(
   });
 
   if (!resp.ok) {
-    throw new Error(`Token exchange failed: HTTP ${resp.status}`);
+    let body: unknown = null;
+    try {
+      body = await resp.json();
+    } catch {
+      try { body = await resp.text(); } catch { /* unreadable */ }
+    }
+    const errObj = (typeof body === 'object' && body !== null) ? body as Record<string, unknown> : {};
+    throw new TokenExchangeError(
+      resp.status,
+      String(errObj['error'] ?? ''),
+      String(errObj['error_description'] ?? ''),
+      body
+    );
   }
 
   return resp.json() as Promise<TokenResponse>;
@@ -69,16 +103,36 @@ export async function getAccessibleResources(accessToken: string): Promise<Acces
   return resp.json() as Promise<AccessibleResource[]>;
 }
 
+export async function getMe(accessToken: string): Promise<MeResponse> {
+  const resp = await _fetchFn(ATLASSIAN_ME_URL, {
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+  });
+
+  if (!resp.ok) {
+    throw new Error(`GET /me failed: HTTP ${resp.status}`);
+  }
+
+  return resp.json() as Promise<MeResponse>;
+}
+
+function errorRedirect(error: string, description: string, correlationId: string, extra?: Record<string, string>): string {
+  const p = new URLSearchParams({ error, description, correlationId, ...extra });
+  return `/connections?${p.toString()}`;
+}
+
 export async function handleCallback(req: Request, res: Response): Promise<void> {
   const { code, state, error } = req.query as Record<string, string | undefined>;
+  const correlationId = randomUUID();
 
   if (error) {
-    res.status(400).json({ error: `oauth_error: ${error}` });
+    console.error(`[oauth-callback] correlationId=${correlationId} oauth_error=${error}`);
+    res.redirect(302, errorRedirect('oauth_error', `Atlassian returned: ${error}`, correlationId));
     return;
   }
 
   if (!code || !state) {
-    res.status(400).json({ error: 'missing_code_or_state' });
+    console.error(`[oauth-callback] correlationId=${correlationId} missing_code_or_state`);
+    res.redirect(302, errorRedirect('missing_code_or_state', 'Missing authorization code or state parameter', correlationId));
     return;
   }
 
@@ -86,29 +140,50 @@ export async function handleCallback(req: Request, res: Response): Promise<void>
 
   const stateRow = db
     .prepare(
-      'SELECT codeVerifier, clientId, connectionId, expiresAt FROM oauth_state WHERE state = ?'
+      'SELECT codeVerifier, clientId, connectionId, expiresAt, redirectUri FROM oauth_state WHERE state = ?'
     )
     .get(state) as
-    | { codeVerifier: string; clientId: string; connectionId: string | null; expiresAt: string }
+    | { codeVerifier: string; clientId: string; connectionId: string | null; expiresAt: string; redirectUri: string }
     | undefined;
 
   if (!stateRow) {
-    res.status(400).json({ error: 'invalid_state' });
+    console.error(`[oauth-callback] correlationId=${correlationId} invalid_state`);
+    res.redirect(302, errorRedirect('invalid_state', 'Invalid or unknown authorization state', correlationId));
     return;
   }
 
   if (new Date(stateRow.expiresAt) < new Date()) {
     db.prepare('DELETE FROM oauth_state WHERE state = ?').run(state);
-    res.status(400).json({ error: 'state_expired' });
+    console.error(`[oauth-callback] correlationId=${correlationId} state_expired`);
+    res.redirect(302, errorRedirect('state_expired', 'Authorization state has expired — please try again', correlationId));
     return;
   }
 
   // One-time use: consume the state before any network calls
   db.prepare('DELETE FROM oauth_state WHERE state = ?').run(state);
 
-  const redirectUri =
-    process.env['OAUTH_REDIRECT_URI'] ??
+  const currentRedirectUri =
+    config.oauthRedirectUri ||
     `${req.protocol}://${req.get('host')}/api/oauth/callback`;
+
+  const storedRedirectUri = stateRow.redirectUri ?? '';
+  if (storedRedirectUri !== '' && storedRedirectUri !== currentRedirectUri) {
+    console.error(
+      `[oauth-callback] correlationId=${correlationId} redirect_uri_mismatch stored=${storedRedirectUri} current=${currentRedirectUri}`
+    );
+    res.redirect(302, errorRedirect('redirect_uri_mismatch', 'Redirect URI mismatch — ensure OAUTH_REDIRECT_URI matches the value used during authorization', correlationId));
+    return;
+  }
+
+  const redirectUri = storedRedirectUri || currentRedirectUri;
+  console.log(`[oauth-callback] redirectUri=${redirectUri}`);
+
+  const clientSecret = config.atlassianClientSecret;
+  if (!clientSecret) {
+    console.error(`[oauth-callback] correlationId=${correlationId} ATLASSIAN_CLIENT_SECRET is not configured`);
+    res.redirect(302, errorRedirect('server_misconfigured', 'Server is missing OAuth credentials — contact your administrator', correlationId));
+    return;
+  }
 
   let tokens: TokenResponse;
   try {
@@ -116,11 +191,22 @@ export async function handleCallback(req: Request, res: Response): Promise<void>
       code,
       stateRow.codeVerifier,
       stateRow.clientId,
+      clientSecret,
       redirectUri
     );
   } catch (err) {
-    console.error('[oauth-callback] token exchange failed:', err);
-    res.status(502).json({ error: 'token_exchange_failed' });
+    if (err instanceof TokenExchangeError) {
+      console.error(
+        `[oauth-callback] correlationId=${correlationId} token exchange failed: status=${err.status} atlassianBody=${JSON.stringify(err.atlassianBody)}`
+      );
+      const description = err.atlassianErrorDescription || err.atlassianError || 'Token exchange failed';
+      const extra: Record<string, string> = {};
+      if (err.atlassianError) extra['atlassian_error'] = err.atlassianError;
+      res.redirect(302, errorRedirect('token_exchange_failed', description, correlationId, extra));
+    } else {
+      console.error(`[oauth-callback] correlationId=${correlationId} token exchange failed:`, err);
+      res.redirect(302, errorRedirect('token_exchange_failed', 'Token exchange failed unexpectedly', correlationId));
+    }
     return;
   }
 
@@ -128,13 +214,14 @@ export async function handleCallback(req: Request, res: Response): Promise<void>
   try {
     resources = await getAccessibleResources(tokens.access_token);
   } catch (err) {
-    console.error('[oauth-callback] accessible-resources failed:', err);
-    res.status(502).json({ error: 'resources_fetch_failed' });
+    console.error(`[oauth-callback] correlationId=${correlationId} accessible-resources failed:`, err);
+    res.redirect(302, errorRedirect('resources_fetch_failed', 'Failed to retrieve accessible Jira sites', correlationId));
     return;
   }
 
   if (resources.length === 0) {
-    res.status(400).json({ error: 'no_accessible_resources' });
+    console.error(`[oauth-callback] correlationId=${correlationId} no_accessible_resources`);
+    res.redirect(302, errorRedirect('no_accessible_resources', 'No accessible Jira sites found for this account', correlationId));
     return;
   }
 
@@ -149,9 +236,19 @@ export async function handleCallback(req: Request, res: Response): Promise<void>
       .get(stateRow.connectionId) as { cloudId: string } | undefined;
 
     if (existing && existing.cloudId !== cloudId) {
-      res.status(409).json({ error: 'cloudid_mismatch' });
+      console.error(`[oauth-callback] correlationId=${correlationId} cloudid_mismatch`);
+      res.redirect(302, errorRedirect('cloudid_mismatch', 'The authorized site does not match the original connection', correlationId));
       return;
     }
+  }
+
+  // Fetch accountId from /me — soft failure, store NULL if unavailable
+  let accountId: string | null = null;
+  try {
+    const me = await getMe(tokens.access_token);
+    accountId = me.accountId;
+  } catch (err) {
+    console.warn(`[oauth-callback] correlationId=${correlationId} GET /me failed (non-fatal):`, err);
   }
 
   const now = new Date().toISOString();
@@ -167,8 +264,8 @@ export async function handleCallback(req: Request, res: Response): Promise<void>
   db.transaction(() => {
     if (existingByCloud) {
       db.prepare(
-        `UPDATE connections SET siteName = ?, status = 'active', updatedAt = ? WHERE connectionId = ?`
-      ).run(siteName, now, connectionId);
+        `UPDATE connections SET siteName = ?, accountId = ?, status = 'active', updatedAt = ? WHERE connectionId = ?`
+      ).run(siteName, accountId, now, connectionId);
 
       db.prepare(
         `UPDATE credentials
@@ -185,9 +282,9 @@ export async function handleCallback(req: Request, res: Response): Promise<void>
       );
     } else {
       db.prepare(
-        `INSERT INTO connections (connectionId, cloudId, siteName, status, createdAt, updatedAt)
-         VALUES (?, ?, ?, 'active', ?, ?)`
-      ).run(connectionId, cloudId, siteName, now, now);
+        `INSERT INTO connections (connectionId, cloudId, siteName, accountId, status, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, 'active', ?, ?)`
+      ).run(connectionId, cloudId, siteName, accountId, now, now);
 
       db.prepare(
         `INSERT INTO credentials (connectionId, accessToken, refreshToken, expiresAt, scopes, updatedAt, clientId)
@@ -205,7 +302,7 @@ export async function handleCallback(req: Request, res: Response): Promise<void>
   })();
 
   console.log(
-    `[oauth-callback] connection upserted: connectionId=${connectionId} cloudId=${cloudId}`
+    `[oauth-callback] connection upserted: connectionId=${connectionId} cloudId=${cloudId} accountId=${accountId ?? 'unknown'}`
   );
   res.redirect(302, '/connections');
 }

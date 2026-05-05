@@ -198,8 +198,8 @@ router.post('/', handleCreateConnection);
 router.get('/', (_req, res) => {
   const db = getDb();
   const rows = db
-    .prepare('SELECT connectionId, cloudId, siteName, status FROM connections ORDER BY createdAt')
-    .all() as Array<{ connectionId: string; cloudId: string; siteName: string; status: string }>;
+    .prepare('SELECT connectionId, cloudId, siteName, accountId, status FROM connections ORDER BY createdAt')
+    .all() as Array<{ connectionId: string; cloudId: string; siteName: string; accountId: string | null; status: string }>;
 
   const result = rows.map((conn) => {
     const probes = getProbeResults(conn.connectionId);
@@ -208,6 +208,7 @@ router.get('/', (_req, res) => {
       connectionId: conn.connectionId,
       cloudId: conn.cloudId,
       siteName: conn.siteName,
+      accountId: conn.accountId ?? undefined,
       status: probeFailedAny ? 'probe-failed' : 'connected',
       probes,
     };

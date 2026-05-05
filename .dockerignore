@@ -4,4 +4,3 @@ node_modules
 data/jira_workload.db
 data/jira_workload.db-shm
 data/jira_workload.db-wal
-dist
