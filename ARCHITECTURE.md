@@ -385,18 +385,18 @@ Emitted **once per pagination request** to `POST /rest/api/3/search/jql`.
 **Verbatim format** (source: `src/workload/http/JiraHttpClient.ts:134`):
 
 ```
-[search] endpoint=search/jql project=<projectKey> page=<page> count=<count>
+[search] endpoint=search/jql project=<projectKey> page=<page> pageSize=<pageSize> returnedCount=<returnedCount>
 ```
 
 **Example — 3-page run, project PROJ, 243 issues, maxResults=100:**
 
 ```
-[search] endpoint=search/jql project=PROJ page=1 count=100
-[search] endpoint=search/jql project=PROJ page=2 count=100
-[search] endpoint=search/jql project=PROJ page=3 count=43
+[search] endpoint=search/jql project=PROJ page=1 pageSize=100 returnedCount=100
+[search] endpoint=search/jql project=PROJ page=2 pageSize=100 returnedCount=100
+[search] endpoint=search/jql project=PROJ page=3 pageSize=100 returnedCount=43
 ```
 
-Pagination terminates after the third request because `count(43) < maxResults(100)`.
+Pagination terminates after the third request because `returnedCount(43) < pageSize(100)`.
 
 Typed as `SearchLogLine` in `src/workload/snapshot/types.ts`.
 
@@ -989,7 +989,7 @@ interface InventoryItem {
  * Issue-specific item shape.
  *
  * displayName MUST equal IssueRecord.key verbatim (e.g. "PROJ-42").
- * InventoryRepository populates displayName directly from the persisted
+ * The inventory handler populates displayName directly from the persisted
  * IssueRecord.key — it does NOT construct the key from parts.
  *
  * projectKey and issueNumber are extracted from the key string (split on '-')
@@ -1013,7 +1013,7 @@ interface InventoryItemsResponse {
 **Issue `displayName` invariant:** For Issues, `displayName` is always
 `IssueRecord.key` verbatim (e.g. `"PROJ-42"`). The format is
 `<PROJECT_KEY>-<N>` where `PROJECT_KEY` is the Jira project key and `N` is the
-sequential issue number. `InventoryRepository` reads this directly from the
+sequential issue number. The inventory handler reads this directly from the
 persisted `IssueRecord.key` field — it never reconstructs the key from parts.
 
 **`changeBadge` enum** (source: `src/workload/backup/types.ts :: ChangeBadge`):
@@ -1150,7 +1150,7 @@ supplied:
 
 No partial implementation of ADF body search is permitted.
 
-#### JSM Exclusion Rule — InventoryRepository Boundary
+#### JSM Exclusion Rule — Inventory Handler Boundary
 
 The JSM exclusion filter is applied at the data boundary — before any response
 object is constructed — using the following rule:

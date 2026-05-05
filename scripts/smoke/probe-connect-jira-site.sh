@@ -11,7 +11,7 @@
 # Requires: running API server (npm run server).
 set -euo pipefail
 
-PORT=${PORT:-3000}
+PORT=${PORT:-4000}
 BASE="http://localhost:${PORT}"
 SMOKE_CLOUD_ID="smoke-cloud-$(date +%s)"
 

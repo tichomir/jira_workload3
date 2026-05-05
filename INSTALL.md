@@ -9,12 +9,13 @@
 | Python 3 | 3.9 (smoke probes only) |
 | curl | any recent version |
 
-## 1. Clone and install dependencies
+## 1. Clone, install, and build
 
 ```bash
 git clone <repo-url> jira-workload
 cd jira-workload
 npm install
+npm run build
 ```
 
 ## 2. Configure environment
@@ -32,7 +33,7 @@ Edit `.env`:
 | `ATLASSIAN_CLIENT_ID` | OAuth app Client ID from the Atlassian developer console |
 | `ATLASSIAN_CLIENT_SECRET` | OAuth app Client Secret |
 | `OAUTH_REDIRECT_URI` | Callback URL registered in the Atlassian developer console |
-| `PORT` | API server port (default `3000`) |
+| `PORT` | API server port (default `4000`) |
 | `DCC_ATTACHMENT_DIR` | _(optional)_ Override directory for attachment binary storage (default: `data/attachments`). Set to an absolute path to redirect storage to an external volume, e.g. `/mnt/backup-volume/attachments`. |
 
 ### HTTPS callback requirement
@@ -46,7 +47,7 @@ Caddy as a local TLS terminator:
 
 ```
 localhost {
-    reverse_proxy /api/* localhost:3000
+    reverse_proxy /api/* localhost:4000
     reverse_proxy /* localhost:5173
 }
 ```
@@ -102,11 +103,27 @@ separate terminal as usual.
 ## 5. Verify the server is running
 
 ```bash
-curl -sf http://localhost:${PORT:-3000}/api/connections | python3 -m json.tool
+curl -sf http://localhost:4000/health
 ```
 
-An empty JSON array `[]` confirms the server is healthy and the database is
-initialised.
+A `{"status":"ok"}` response confirms the server is healthy.
+
+To also confirm the database is initialised:
+
+```bash
+curl -sf http://localhost:4000/api/connections | python3 -m json.tool
+```
+
+An empty JSON array `[]` confirms connections are accessible.
+
+## 5a. Run the test suite
+
+```bash
+npm run test
+```
+
+All tests run against an in-memory SQLite database with no live credentials required.
+Exit 0 and `Test Files N passed` confirms the suite is healthy.
 
 ## 6. CI Secrets
 
@@ -164,7 +181,7 @@ and enforces the timeout via the system `timeout` command.
 ## 7. API surface
 
 All endpoints are served by the Express API server (`npm run server`) on
-`http://localhost:${PORT}` (default 3000).
+`http://localhost:${PORT}` (default 4000).
 
 | Method | Path | Description |
 |---|---|---|

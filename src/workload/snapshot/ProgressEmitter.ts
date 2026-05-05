@@ -30,8 +30,8 @@ export class ProgressEmitter {
 
   constructor(
     private readonly jobId: string,
-    private readonly manifestId: string,
-    private readonly connectionId: string,
+    manifestId: string,
+    connectionId: string,
     private readonly db: Database.Database = getDb()
   ) {
     const now = new Date().toISOString();

@@ -215,8 +215,8 @@ describe('restore job integration — phase ordering and fault injection', () =>
       const mockRes = {
         _code: 200,
         _body: undefined as unknown,
-        status(c: number) { this._code = c; return this; },
-        json(b: unknown) { this._body = b; return this; },
+        status(c: number) { (this as any)._code = c; return this; },
+        json(b: unknown) { (this as any)._body = b; return this; },
       } as unknown as Response;
       await handleCreateRestoreJob(makeReq(validBody()), mockRes);
       const resp = mockRes as unknown as { _code: number; _body: { jobId: string; status: string } };
@@ -283,8 +283,8 @@ describe('restore job integration — phase ordering and fault injection', () =>
       const mockRes = {
         _code: 200,
         _body: undefined as unknown,
-        status(c: number) { this._code = c; return this; },
-        json(b: unknown) { this._body = b; return this; },
+        status(c: number) { (this as any)._code = c; return this; },
+        json(b: unknown) { (this as any)._body = b; return this; },
       } as unknown as Response;
       await handleCreateRestoreJob(makeReq(validBody()), mockRes);
       const resp = mockRes as unknown as { _code: number; _body: { jobId: string; status: string } };
@@ -382,8 +382,8 @@ describe('restore job integration — phase ordering and fault injection', () =>
     const mockRes = {
       _code: 200,
       _body: undefined as unknown,
-      status(c: number) { this._code = c; return this; },
-      json(b: unknown) { this._body = b; return this; },
+      status(c: number) { (this as any)._code = c; return this; },
+      json(b: unknown) { (this as any)._body = b; return this; },
     } as unknown as Response;
     await handleCreateRestoreJob(makeReq(validBody()), mockRes);
     const resp = mockRes as unknown as { _code: number; _body: { jobId: string } };
@@ -416,8 +416,8 @@ describe('restore job integration — phase ordering and fault injection', () =>
     const mockRes = {
       _code: 200,
       _body: undefined as unknown,
-      status(c: number) { this._code = c; return this; },
-      json(b: unknown) { this._body = b; return this; },
+      status(c: number) { (this as any)._code = c; return this; },
+      json(b: unknown) { (this as any)._body = b; return this; },
     } as unknown as Response;
     await handleCreateRestoreJob(makeReq(validBody()), mockRes);
     const resp = mockRes as unknown as { _body: { jobId: string } };

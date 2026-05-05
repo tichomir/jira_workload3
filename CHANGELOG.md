@@ -4,6 +4,63 @@ All notable changes are documented here by sprint.
 
 ---
 
+## [Sprint 18] — 2026-05-05 — Maintenance: Build & Run Validation
+
+This sprint repaired the project to a fully green state: build succeeds, server starts on port 4000, test suite passes, and canonical docs are consistent.
+
+### Fixed
+
+#### TypeScript build errors — `src/` (multiple files)
+- Class A: added `_code` / `_body` typed stub interface to test helpers in
+  `src/routes/restore-guards-e2e.test.ts` and `src/routes/restore-jobs-phase-order.test.ts`.
+- Class B: corrected unsafe `as Record<string, unknown>` cast to double-cast
+  `as unknown as Record<string, unknown>` in `src/routes/restore-guards-e2e.test.ts`.
+- Class C: added missing `RawIssue` type import in `src/workload/http/JiraHttpClient.ts`.
+- Class D: removed unused imported/declared symbols (`CaptureProgressEvent`,
+  `manifestId`, `connectionId`) in `src/workload/JiraWorkload.ts` and
+  `src/workload/snapshot/ProgressEmitter.ts`.
+- Class E: wrapped `vi.restoreAllMocks()` calls in `void` to satisfy
+  `Awaitable<void>` return type in `afterEach` callbacks across five test files.
+- Class F: corrected `MockInstance` generic annotation from
+  `MockInstance<unknown[], unknown>` to `MockInstance` (no annotation) in
+  `src/workload/restore/boardScopeRecheck.test.ts` and
+  `src/workload/restore/trashDetectionGuard.test.ts`.
+- Class G: changed `diffSummary` test fixture from `undefined` to `null` in
+  `src/workload/snapshot/CaptureOrchestrator.test.ts`.
+- Class H: replaced typed tuple destructuring with untyped destructuring in
+  `Object.entries` callbacks in `CaptureOrchestrator.test.ts` and
+  `ProgressEmitter.test.ts`.
+- Class I: corrected empty-tuple index access in
+  `src/workload/snapshot/downloadIssueAttachments.test.ts`.
+
+#### Default port changed from 3000 to 4000 — `src/server.ts`, `.env.example`, `Caddyfile`
+- `src/server.ts` fallback changed to `'4000'` so the server binds to port 4000
+  without any `PORT` env var set.
+- `.env.example` `PORT` default updated to `4000`.
+- `Caddyfile` reverse-proxy target updated from `localhost:3000` to `localhost:4000`.
+
+#### `/health` liveness endpoint added — `src/server.ts`
+- `GET /health` returns `{ "status": "ok" }` with HTTP 200. Used as the canonical
+  liveness probe in `INSTALL.md §5` and `README.md` Quick Start.
+
+### Documentation
+
+- `README.md` — added **Quick Start** block with literal `npm run build`,
+  `npm run server`, `npm run test` commands and a `curl http://localhost:4000/health`
+  liveness probe.
+- `INSTALL.md §1` — renamed to "Clone, install, and build"; added `npm run build` step.
+- `INSTALL.md §5` — updated liveness probe from `/api/connections` to
+  `curl -sf http://localhost:4000/health`.
+- `INSTALL.md §5a` — new section documenting `npm run test` with expected output.
+- All port references in `INSTALL.md`, `README.md`, `.env.example`, and `Caddyfile`
+  updated to `4000`.
+
+### No new environment variables
+No new environment variables introduced. `PORT` default changed to `4000` in
+`.env.example` and `src/server.ts`.
+
+---
+
 ## [1.0.0-mvp] [Sprint 17 — Phase 5 Sprint 2] — 2026-05-05 — MVP Closeout: CI Smoke Gating, Runbook & Tihomir Handoff
 
 This release marks the Phase 1 MVP closeout. All G-01 through G-13 observable signals pass. The CI
@@ -788,7 +845,7 @@ No new environment variables or ports are introduced in this sprint.
 - `enumerateIssues(cloudBaseUrl, projectKey, jql, fields, opts)` — paginates
   `POST /rest/api/3/search/jql` using `nextPageToken`; terminates on
   `issues.length === 0` or `issues.length < maxResults`.
-- Emits `[search] endpoint=search/jql project=<key> page=<n> count=<n>` per page
+- Emits `[search] endpoint=search/jql project=<key> page=<n> pageSize=<n> returnedCount=<n>` per page
   for operator-observable progress.
 
 #### `JiraWorkload.snapshot()` — `src/workload/JiraWorkload.ts`

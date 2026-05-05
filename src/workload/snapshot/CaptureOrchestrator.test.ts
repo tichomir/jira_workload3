@@ -39,6 +39,7 @@ function makeManifest(overrides: Partial<BackupManifest> = {}): BackupManifest {
     customFieldsCaptured: null,
     customFieldsSkipped: [],
     coverageInvariant: null,
+    diffSummary: null,
     ...overrides,
   };
 }
@@ -130,7 +131,7 @@ describe('CaptureOrchestrator — phase ordering', () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => { vi.restoreAllMocks(); });
 
   it('emits events in order: CustomField → Project → Issue', async () => {
     const client = makeMockClient();
@@ -170,7 +171,7 @@ describe('CaptureOrchestrator — CustomField phase', () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => { vi.restoreAllMocks(); });
 
   it('CustomField phase status is ok and itemCount equals custom field count', async () => {
     const client = makeMockClient(['customfield_10016', 'customfield_10020']);
@@ -235,7 +236,7 @@ describe('CaptureOrchestrator — Issue phase', () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => { vi.restoreAllMocks(); });
 
   it('Issue phase captures one issue per project', async () => {
     const customFieldIds = ['customfield_10016'];
@@ -344,7 +345,7 @@ describe('CaptureOrchestrator — full snapshot integration', () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => { vi.restoreAllMocks(); });
 
   it('runs all three phases against a mock and returns no errors', async () => {
     const customFieldIds = ['customfield_10016', 'customfield_10020'];
@@ -432,7 +433,7 @@ describe('CaptureOrchestrator — full snapshot integration', () => {
 
     // Context endpoint was NOT called for system fields
     const contextCalls = (client.getJson as ReturnType<typeof vi.fn>).mock.calls.filter(
-      ([, p]: [string, string]) => typeof p === 'string' && p.includes('/context')
+      (args: any[]) => typeof args[1] === 'string' && (args[1] as string).includes('/context')
     );
     expect(contextCalls).toHaveLength(1); // only customfield_10016
   });

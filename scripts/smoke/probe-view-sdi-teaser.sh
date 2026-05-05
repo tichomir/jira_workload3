@@ -12,7 +12,7 @@
 # Unit-test steps use vitest and do not require a live server.
 set -euo pipefail
 
-PORT=${PORT:-3000}
+PORT=${PORT:-4000}
 BASE="http://localhost:${PORT}"
 DB_PATH="${DB_PATH:-data/jira_workload.db}"
 BACKUP_POINT_ID="smoke-sdi-bp-$(date +%s)"

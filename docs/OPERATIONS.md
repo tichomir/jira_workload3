@@ -55,7 +55,7 @@ Any probe returning `status=403` sets `remediationNeeded: true` in `probe_result
 
 3. **Re-run probes manually** after re-authorising:
    ```bash
-   curl -s http://localhost:3000/api/connections/<connectionId>/probes | jq .
+   curl -s http://localhost:4000/api/connections/<connectionId>/probes | jq .
    ```
    All four probes should return `status: 200` and `remediationNeeded: false`.
 
@@ -216,7 +216,7 @@ This guarantees that no concurrent reader can observe a half-written credential 
 4. After successful re-auth, confirm the refresh cycle works:
    ```bash
    # Trigger any authenticated probe to force a token use
-   curl -s http://localhost:3000/api/connections/<connectionId>/probes | jq .
+   curl -s http://localhost:4000/api/connections/<connectionId>/probes | jq .
    # Then check the log for a clean mutex lifecycle
    grep "\[auth-refresh\]" server.log | tail -5
    ```

@@ -160,7 +160,7 @@ describe('discoverFieldContexts — mixed custom/system fixture', () => {
 // ---------------------------------------------------------------------------
 
 describe('discoverFieldContexts — context pagination', () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => { vi.restoreAllMocks(); });
 
   it('paginates context endpoint until isLast=true', async () => {
     const fields = [makeField('customfield_10016', 'Story Points', true)];
@@ -217,7 +217,7 @@ describe('discoverFieldContexts — context pagination', () => {
 // ---------------------------------------------------------------------------
 
 describe('discoverFieldContexts — FieldContextRecord shape', () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => { vi.restoreAllMocks(); });
 
   it('persists fieldId, fieldName, custom=true, and context array', async () => {
     const fields = [makeField('customfield_10016', 'Story Points', true)];

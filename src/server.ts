@@ -11,7 +11,7 @@ import { backupPointsRouter } from './routes/backup-points.js';
 import { getDb } from './db/database.js';
 
 const app = express();
-const PORT = parseInt(process.env['PORT'] ?? '3000', 10);
+const PORT = parseInt(process.env['PORT'] ?? '4000', 10);
 
 app.use(express.json());
 app.use('/api/oauth', oauthRouter);
@@ -25,6 +25,8 @@ app.use('/api/jobs', jobsRouter);
 app.use('/api/backup-points', backupPointsRouter);
 
 getDb();
+
+app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
 app.listen(PORT, () => {
   console.log(`API server listening on http://localhost:${PORT}`);

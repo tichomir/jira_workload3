@@ -144,7 +144,7 @@ describe('ProgressEmitter — happy path (no errors)', () => {
     emitter.complete(0);
 
     const logCalls = (console.log as ReturnType<typeof vi.fn>).mock.calls
-      .map(([s]: [string]) => s);
+      .map((args: any[]) => args[0] as string);
     expect(logCalls.some((s) => s.includes('[backup-job]') && s.includes('op=heartbeat'))).toBe(true);
   });
 
@@ -154,7 +154,7 @@ describe('ProgressEmitter — happy path (no errors)', () => {
     emitter.complete(0);
 
     const logCalls = (console.log as ReturnType<typeof vi.fn>).mock.calls
-      .map(([s]: [string]) => s);
+      .map((args: any[]) => args[0] as string);
     expect(logCalls.some((s) => s.includes('op=completed') && s.includes('errors=0'))).toBe(true);
   });
 
@@ -221,7 +221,7 @@ describe('ProgressEmitter — completion with errors', () => {
     emitter.complete(5);
 
     const logCalls = (console.log as ReturnType<typeof vi.fn>).mock.calls
-      .map(([s]: [string]) => s);
+      .map((args: any[]) => args[0] as string);
     const completedLine = logCalls.find((s) => s.includes('op=completed'));
     expect(completedLine).toBeDefined();
     expect(completedLine).toContain('errors=5');
@@ -270,7 +270,7 @@ describe('ProgressEmitter — fatal failure', () => {
     emitter.fail('network error');
 
     const logCalls = (console.log as ReturnType<typeof vi.fn>).mock.calls
-      .map(([s]: [string]) => s);
+      .map((args: any[]) => args[0] as string);
     expect(logCalls.some((s) => s.includes('op=failed'))).toBe(true);
   });
 });
@@ -336,7 +336,7 @@ describe('ProgressEmitter — stalled detection', () => {
     await vi.advanceTimersByTimeAsync(25_000);
 
     const logCalls = (console.log as ReturnType<typeof vi.fn>).mock.calls
-      .map(([s]: [string]) => s);
+      .map((args: any[]) => args[0] as string);
     expect(logCalls.some((s) => s.includes('op=stalled'))).toBe(true);
 
     emitter.complete(0);

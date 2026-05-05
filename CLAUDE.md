@@ -698,3 +698,185 @@ This is sprint 2 of 2 for the phase. Plan a slice of the deliverables appropriat
 - ✅ Verify test suite passes after log format changes — Devops Engineer (◈ Standard, 3 SP)
 
 ---
+### Sprint 18 — Maintenance: Build & Run Validation | 2026-05-05 | ⏳ in progress | 24 SP est.
+**Goal:** [Maintenance Sprint] Build & Run Validation
+
+## Goal
+Get the project to a state where it builds without errors, starts cleanly,
+and its existing tests pass. Do NOT add features. Do NOT change architecture.
+Only repair.
+
+## Definition of Done (all four must be true)
+1. The project's standard build command succeeds with exit 0.
+2. The project's standard start command launches the server, it stays
+   alive for at least 30 seconds, and `GET http://localhost:4000/health`
+   (or the project's documented liveness endpoint) returns 2xx.
+3. The project's standard test command exits 0 with no failures or errors.
+4. README.md / INSTALL.md state the build and start commands; running them
+   exactly as documented produces points 1-3.
+
+## Configuration
+- TARGET_PORT: 4000  (the server must listen on this port; if the
+  default in the codebase is different, change the default to TARGET_PORT)
+
+## Approach (iterate until DoD is met)
+1. **Detect project shape.** Look for one of:
+   - `package.json` → Node.js / npm or pnpm or yarn
+   - `pyproject.toml` / `setup.py` / `requirements.txt` → Python
+   - `Cargo.toml` → Rust
+   - `go.mod` → Go
+   - `pom.xml` / `build.gradle` → Java
+   - `Makefile` → make-driven
+   Use the tooling that matches. Don't introduce a new build system.
+
+2. **Build pass.** Run the standard build command. If it fails:
+   - Read the error output completely.
+   - Fix the smallest set of things that resolve it (type errors, missing
+     imports, unused-symbol strict-mode warnings, version conflicts).
+   - Re-run. Repeat until exit 0.
+
+3. **Dependency pass.** If the build or test command can't even start
+   because of missing native binaries / lockfile drift / missing platform
+   modules:
+   - Re-resolve dependencies (e.g. `rm -rf node_modules && npm install`
+     for Node, `pip install -r requirements.txt` for Python, equivalent
+     for the project's package manager).
+   - Verify the lockfile is committed.
+
+4. **Run pass.** Start the server on TARGET_PORT.
+   - If the codebase defaults to a different port, change the default to
+     TARGET_PORT in the relevant config file (`.env.example`, `config.ts`,
+     CLI flag default, etc.) and update INSTALL.md/README.md to match.
+   - Probe `GET http://localhost:TARGET_PORT/health` (or the project's
+     documented endpoint). If it returns 2xx, that's a pass.
+   - If startup fails, read stderr, fix the cause, re-run.
+
+5. **Test pass.** Run the standard test command. Fix every failing test
+   until exit 0. If a test is failing because of a real product bug, fix
+   the bug; if it's failing because of a stale assertion, fix the test.
+   Don't delete tests to make them pass.
+
+6. **Doc consistency.** README.md and INSTALL.md must state the build,
+   start, and test commands literally. If TARGET_PORT changed, every
+   port reference in canonical docs must be updated.
+
+## Out of scope
+- New features
+- Refactoring that isn't strictly necessary to make 1-4 pass
+- Performance work
+- Updating dependencies to newer major versions
+
+## When to surface as P0 carry-forward (instead of fixing in this sprint)
+- The project is missing a fundamental component (e.g. no entry point at all,
+  no test runner configured) — flag it; don't reinvent.
+- A test is asserting against a removed feature — flag it for product owner
+  decision; don't silently delete.
+- Build error caused by an external service being down — flag it.
+
+## Hints for the planner
+This sprint typically decomposes into ~5-7 tasks:
+- Diagnosis (architect, 2 SP): walk the repo, list every error class
+- Build-error fixes (backend, 3-5 SP per cluster of related errors)
+- Dependency repair if needed (devops, 2 SP)
+- Run/port fix (backend, 2-3 SP)
+- Test fixes (backend or QA, 3-5 SP)
+- Doc consistency pass (architect or devops, 2 SP)
+
+_Sprint started. Role checkpoints below will update as work completes._
+
+---
+### Sprint 18 — Maintenance: Build & Run Validation | 2026-05-05 | ✅ done | 24 SP
+**Goal:** [Maintenance Sprint] Build & Run Validation
+
+## Goal
+Get the project to a state where it builds without errors, starts cleanly,
+and its existing tests pass. Do NOT add features. Do NOT change architecture.
+Only repair.
+
+## Definition of Done (all four must be true)
+1. The project's standard build command succeeds with exit 0.
+2. The project's standard start command launches the server, it stays
+   alive for at least 30 seconds, and `GET http://localhost:4000/health`
+   (or the project's documented liveness endpoint) returns 2xx.
+3. The project's standard test command exits 0 with no failures or errors.
+4. README.md / INSTALL.md state the build and start commands; running them
+   exactly as documented produces points 1-3.
+
+## Configuration
+- TARGET_PORT: 4000  (the server must listen on this port; if the
+  default in the codebase is different, change the default to TARGET_PORT)
+
+## Approach (iterate until DoD is met)
+1. **Detect project shape.** Look for one of:
+   - `package.json` → Node.js / npm or pnpm or yarn
+   - `pyproject.toml` / `setup.py` / `requirements.txt` → Python
+   - `Cargo.toml` → Rust
+   - `go.mod` → Go
+   - `pom.xml` / `build.gradle` → Java
+   - `Makefile` → make-driven
+   Use the tooling that matches. Don't introduce a new build system.
+
+2. **Build pass.** Run the standard build command. If it fails:
+   - Read the error output completely.
+   - Fix the smallest set of things that resolve it (type errors, missing
+     imports, unused-symbol strict-mode warnings, version conflicts).
+   - Re-run. Repeat until exit 0.
+
+3. **Dependency pass.** If the build or test command can't even start
+   because of missing native binaries / lockfile drift / missing platform
+   modules:
+   - Re-resolve dependencies (e.g. `rm -rf node_modules && npm install`
+     for Node, `pip install -r requirements.txt` for Python, equivalent
+     for the project's package manager).
+   - Verify the lockfile is committed.
+
+4. **Run pass.** Start the server on TARGET_PORT.
+   - If the codebase defaults to a different port, change the default to
+     TARGET_PORT in the relevant config file (`.env.example`, `config.ts`,
+     CLI flag default, etc.) and update INSTALL.md/README.md to match.
+   - Probe `GET http://localhost:TARGET_PORT/health` (or the project's
+     documented endpoint). If it returns 2xx, that's a pass.
+   - If startup fails, read stderr, fix the cause, re-run.
+
+5. **Test pass.** Run the standard test command. Fix every failing test
+   until exit 0. If a test is failing because of a real product bug, fix
+   the bug; if it's failing because of a stale assertion, fix the test.
+   Don't delete tests to make them pass.
+
+6. **Doc consistency.** README.md and INSTALL.md must state the build,
+   start, and test commands literally. If TARGET_PORT changed, every
+   port reference in canonical docs must be updated.
+
+## Out of scope
+- New features
+- Refactoring that isn't strictly necessary to make 1-4 pass
+- Performance work
+- Updating dependencies to newer major versions
+
+## When to surface as P0 carry-forward (instead of fixing in this sprint)
+- The project is missing a fundamental component (e.g. no entry point at all,
+  no test runner configured) — flag it; don't reinvent.
+- A test is asserting against a removed feature — flag it for product owner
+  decision; don't silently delete.
+- Build error caused by an external service being down — flag it.
+
+## Hints for the planner
+This sprint typically decomposes into ~5-7 tasks:
+- Diagnosis (architect, 2 SP): walk the repo, list every error class
+- Build-error fixes (backend, 3-5 SP per cluster of related errors)
+- Dependency repair if needed (devops, 2 SP)
+- Run/port fix (backend, 2-3 SP)
+- Test fixes (backend or QA, 3-5 SP)
+- Doc consistency pass (architect or devops, 2 SP)
+
+**Delivered:**
+- ✅ Diagnose repo build/run/test state and produce error inventory — Software Architect (⚡ Quick, 2 SP)
+- ✅ Resolve dependencies and lockfile drift — Devops Engineer (⚡ Quick, 2 SP)
+- ✅ Fix build errors until `npm run build` exits 0 — Backend Developer (◉ Deep, 5 SP)
+- ✅ Set server default port to 4000 and verify /health liveness — Backend Developer (◈ Standard, 3 SP)
+- ✅ Repair failing tests until `npm test` exits 0 — Qa Engineer (◉ Deep, 5 SP)
+- ✅ Update README.md and INSTALL.md to document literal build/start/test commands and port 4000 — Devops Engineer (⚡ Quick, 2 SP)
+- ✅ Resolve P0 carry-forward doc-grounding gaps in canonical docs — Devops Engineer (◈ Standard, 3 SP)
+- ✅ Verify doc grounding and DoD end-to-end on a clean checkout — Qa Engineer (⚡ Quick, 2 SP)
+
+---

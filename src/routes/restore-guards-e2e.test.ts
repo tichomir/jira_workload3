@@ -227,8 +227,8 @@ describe('(a) Pre-restore board-scope re-check guard', () => {
     const mockJobRes = {
       _code: 0,
       _body: {} as Record<string, unknown>,
-      status(c: number) { this._code = c; return this; },
-      json(b: unknown) { this._body = b as Record<string, unknown>; return this; },
+      status(c: number) { (this as any)._code = c; return this; },
+      json(b: unknown) { (this as any)._body = b as Record<string, unknown>; return this; },
     } as unknown as Response;
 
     await handleCreateRestoreJob(makeReq(validBody()), mockJobRes);
@@ -270,8 +270,8 @@ describe('(a) Pre-restore board-scope re-check guard', () => {
     const mockJobRes = {
       _code: 0,
       _body: {} as Record<string, unknown>,
-      status(c: number) { this._code = c; return this; },
-      json(b: unknown) { this._body = b as Record<string, unknown>; return this; },
+      status(c: number) { (this as any)._code = c; return this; },
+      json(b: unknown) { (this as any)._body = b as Record<string, unknown>; return this; },
     } as unknown as Response;
 
     await handleCreateRestoreJob(makeReq(validBody()), mockJobRes);
@@ -330,8 +330,8 @@ describe('(a) Pre-restore board-scope re-check guard', () => {
     const mockJobRes = {
       _code: 0,
       _body: {} as Record<string, unknown>,
-      status(c: number) { this._code = c; return this; },
-      json(b: unknown) { this._body = b as Record<string, unknown>; return this; },
+      status(c: number) { (this as any)._code = c; return this; },
+      json(b: unknown) { (this as any)._body = b as Record<string, unknown>; return this; },
     } as unknown as Response;
 
     await handleCreateRestoreJob(makeReq(validBody()), mockJobRes);
@@ -380,8 +380,8 @@ describe('(b) Trash-detection forcing alternate-location', () => {
     const mockJobRes = {
       _code: 0,
       _body: {} as Record<string, unknown>,
-      status(c: number) { this._code = c; return this; },
-      json(b: unknown) { this._body = b as Record<string, unknown>; return this; },
+      status(c: number) { (this as any)._code = c; return this; },
+      json(b: unknown) { (this as any)._body = b as Record<string, unknown>; return this; },
     } as unknown as Response;
 
     // Selection includes PROJ project key — trash check will trigger
@@ -426,8 +426,8 @@ describe('(b) Trash-detection forcing alternate-location', () => {
     const mockJobRes = {
       _code: 0,
       _body: {} as Record<string, unknown>,
-      status(c: number) { this._code = c; return this; },
-      json(b: unknown) { this._body = b as Record<string, unknown>; return this; },
+      status(c: number) { (this as any)._code = c; return this; },
+      json(b: unknown) { (this as any)._body = b as Record<string, unknown>; return this; },
     } as unknown as Response;
 
     await handleCreateRestoreJob(
@@ -501,8 +501,8 @@ describe('(c) Post-issue creation pass', () => {
     const mockJobRes = {
       _code: 0,
       _body: {} as Record<string, unknown>,
-      status(c: number) { this._code = c; return this; },
-      json(b: unknown) { this._body = b as Record<string, unknown>; return this; },
+      status(c: number) { (this as any)._code = c; return this; },
+      json(b: unknown) { (this as any)._body = b as Record<string, unknown>; return this; },
     } as unknown as Response;
 
     await handleCreateRestoreJob(makeReq(validBody()), mockJobRes);
@@ -611,8 +611,8 @@ describe('(c) Post-issue creation pass', () => {
     const mockJobRes = {
       _code: 0,
       _body: {} as Record<string, unknown>,
-      status(c: number) { this._code = c; return this; },
-      json(b: unknown) { this._body = b as Record<string, unknown>; return this; },
+      status(c: number) { (this as any)._code = c; return this; },
+      json(b: unknown) { (this as any)._body = b as Record<string, unknown>; return this; },
     } as unknown as Response;
 
     await handleCreateRestoreJob(makeReq(validBody()), mockJobRes);
@@ -711,8 +711,8 @@ describe('(d) SSE phase event ordering — strict array equality', () => {
     const mockJobRes = {
       _code: 0,
       _body: {} as Record<string, unknown>,
-      status(c: number) { this._code = c; return this; },
-      json(b: unknown) { this._body = b as Record<string, unknown>; return this; },
+      status(c: number) { (this as any)._code = c; return this; },
+      json(b: unknown) { (this as any)._body = b as Record<string, unknown>; return this; },
     } as unknown as Response;
 
     await handleCreateRestoreJob(makeReq(validBody()), mockJobRes);
@@ -762,7 +762,7 @@ describe('(d) SSE phase event ordering — strict array equality', () => {
 
     console.log('[TRACE] (d-full-order) phase_started sequence:', JSON.stringify(startedPhases, null, 2));
     console.log('[TRACE] (d-full-order) sub-phase sequence:', JSON.stringify(subPhaseEvents.map((e) => e.subPhase), null, 2));
-    console.log('[TRACE] (d-full-order) full SSE event types:', JSON.stringify(events.map((e) => ({ type: e.type, phase: (e as Record<string, unknown>)['phase'], subPhase: (e as Record<string, unknown>)['subPhase'] })), null, 2));
+    console.log('[TRACE] (d-full-order) full SSE event types:', JSON.stringify(events.map((e) => ({ type: e.type, phase: (e as unknown as Record<string, unknown>)['phase'], subPhase: (e as unknown as Record<string, unknown>)['subPhase'] })), null, 2));
   });
 });
 
@@ -780,8 +780,8 @@ describe('(e) job_failed payload on board guard failure', () => {
     const mockJobRes = {
       _code: 0,
       _body: {} as Record<string, unknown>,
-      status(c: number) { this._code = c; return this; },
-      json(b: unknown) { this._body = b as Record<string, unknown>; return this; },
+      status(c: number) { (this as any)._code = c; return this; },
+      json(b: unknown) { (this as any)._body = b as Record<string, unknown>; return this; },
     } as unknown as Response;
 
     await handleCreateRestoreJob(makeReq(validBody()), mockJobRes);
@@ -840,8 +840,8 @@ describe('(e) job_failed payload on board guard failure', () => {
     const mockJobRes = {
       _code: 0,
       _body: {} as Record<string, unknown>,
-      status(c: number) { this._code = c; return this; },
-      json(b: unknown) { this._body = b as Record<string, unknown>; return this; },
+      status(c: number) { (this as any)._code = c; return this; },
+      json(b: unknown) { (this as any)._body = b as Record<string, unknown>; return this; },
     } as unknown as Response;
 
     await handleCreateRestoreJob(makeReq(validBody()), mockJobRes);

@@ -2,6 +2,23 @@
 
 Automated daily backup and point-in-time restore for Jira Cloud Issues, Projects, Boards, Sprints, Workflows, Custom Fields, and Attachments via Atlassian OAuth 2.0 (3LO).
 
+## Quick Start
+
+```bash
+npm install
+npm run build          # compile TypeScript + Vite bundle
+npm run server         # API server on http://localhost:4000
+npm run test           # run test suite
+```
+
+Verify the server is healthy:
+
+```bash
+curl -sf http://localhost:4000/health
+```
+
+See [INSTALL.md](INSTALL.md) for full prerequisites, environment setup, and OAuth configuration.
+
 ## Quick links
 
 | Document | Purpose |

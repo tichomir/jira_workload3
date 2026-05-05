@@ -118,7 +118,7 @@ describe('downloadIssueAttachments — successful download', () => {
   it('uses the canonical client — downloadAttachment called with correct URL base and id', async () => {
     const fileBytes = Buffer.from('x');
     const sha256 = createHash('sha256').update(fileBytes).digest('hex');
-    const mockDl = vi.fn(async () => ({ data: fileBytes, contentType: 'text/plain', contentHash: sha256 }));
+    const mockDl = vi.fn(async (_base: string, _id: string) => ({ data: fileBytes, contentType: 'text/plain', contentHash: sha256 }));
     const client = makeClient(mockDl);
 
     await downloadIssueAttachments(

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { checkBoardScopesFromString, REQUIRED_BOARD_SCOPES } from './boardScopeRecheck.js';
 
 describe('checkBoardScopesFromString', () => {
-  let consoleSpy: ReturnType<typeof vi.spyOn>;
+  let consoleSpy: { mockRestore(): void; mock: { calls: unknown[][] } };
 
   beforeEach(() => {
     consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});

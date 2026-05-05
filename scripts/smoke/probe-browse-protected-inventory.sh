@@ -14,7 +14,7 @@
 # Requires: running API server (npm run server).
 set -euo pipefail
 
-PORT=${PORT:-3000}
+PORT=${PORT:-4000}
 BASE="http://localhost:${PORT}"
 DB_PATH="${DB_PATH:-data/jira_workload.db}"
 SMOKE_CLOUD_ID="smoke-inv-$(date +%s)"

@@ -2,9 +2,9 @@
 
 ## Prerequisites
 
-- API server running on `http://localhost:3000` (see [INSTALL.md](INSTALL.md))
+- API server running on `http://localhost:4000` (see [INSTALL.md](INSTALL.md))
 - Atlassian OAuth app configured with `ATLASSIAN_CLIENT_ID`, `ATLASSIAN_CLIENT_SECRET`, and `OAUTH_REDIRECT_URI` set in `.env` (copy `.env.example` to `.env` and fill in values — see [INSTALL.md](INSTALL.md))
-- Caddy (or any HTTPS proxy) terminating TLS at `https://localhost` and forwarding `/api/*` to port 3000
+- Caddy (or any HTTPS proxy) terminating TLS at `https://localhost` and forwarding `/api/*` to port 4000
 
 ---
 
@@ -61,7 +61,7 @@ To run permission probes manually:
 
 ```bash
 CONNECTION_ID=<id-from-list>
-curl -sf http://localhost:3000/api/connections/${CONNECTION_ID}/probes \
+curl -sf http://localhost:4000/api/connections/${CONNECTION_ID}/probes \
   | python3 -m json.tool
 ```
 
@@ -131,7 +131,7 @@ projects on the site and write a backup-point manifest to the
 ```bash
 CONNECTION_ID=<id-from-connections-list>
 
-curl -sf -X POST http://localhost:3000/api/discover \
+curl -sf -X POST http://localhost:4000/api/discover \
   -H 'Content-Type: application/json' \
   -d "{
     \"connectionId\": \"${CONNECTION_ID}\",
@@ -158,7 +158,7 @@ Expected response:
 ### Trigger a discover run — selected projects
 
 ```bash
-curl -sf -X POST http://localhost:3000/api/discover \
+curl -sf -X POST http://localhost:4000/api/discover \
   -H 'Content-Type: application/json' \
   -d "{
     \"connectionId\": \"${CONNECTION_ID}\",
@@ -249,8 +249,8 @@ During a snapshot run, each phase emits structured log lines and progress events
 ```
 [snapshot-progress] phase=CustomField captured=12 total=12 elapsedMs=340
 [snapshot-progress] phase=Project captured=4 total=4 elapsedMs=345
-[search] endpoint=search/jql project=MYPROJ page=1 count=100
-[search] endpoint=search/jql project=MYPROJ page=2 count=37
+[search] endpoint=search/jql project=MYPROJ page=1 pageSize=100 returnedCount=100
+[search] endpoint=search/jql project=MYPROJ page=2 pageSize=100 returnedCount=37
 [snapshot] project=MYPROJ issues=137 captured=137 errored=0
 [snapshot-progress] phase=Issue captured=137 total=unknown elapsedMs=4800
 [snapshot-progress] phase=Issue captured=137 total=137 elapsedMs=4850
@@ -302,7 +302,7 @@ Point Objective, retention window, and project scope.
 ```bash
 CONNECTION_ID=<id-from-connections-list>
 
-curl -sf -X POST http://localhost:3000/api/policies \
+curl -sf -X POST http://localhost:4000/api/policies \
   -H 'Content-Type: application/json' \
   -d "{
     \"connectionId\":  \"${CONNECTION_ID}\",
@@ -329,7 +329,7 @@ Expected response (HTTP 201):
 ### Create a policy with a JQL filter
 
 ```bash
-curl -sf -X POST http://localhost:3000/api/policies \
+curl -sf -X POST http://localhost:4000/api/policies \
   -H 'Content-Type: application/json' \
   -d "{
     \"connectionId\":  \"${CONNECTION_ID}\",
@@ -347,7 +347,7 @@ the policy. An invalid JQL expression returns HTTP 400
 ### Create a policy — selected projects
 
 ```bash
-curl -sf -X POST http://localhost:3000/api/policies \
+curl -sf -X POST http://localhost:4000/api/policies \
   -H 'Content-Type: application/json' \
   -d "{
     \"connectionId\":        \"${CONNECTION_ID}\",
@@ -459,7 +459,7 @@ displays **"Completed with N errors"** — never "Completed successfully."
 ```bash
 JOB_ID=<jobId-from-backup-run>
 
-curl -sf "http://localhost:3000/api/jobs/${JOB_ID}" | python3 -m json.tool
+curl -sf "http://localhost:4000/api/jobs/${JOB_ID}" | python3 -m json.tool
 ```
 
 Response:
@@ -640,11 +640,11 @@ CONNECTION_ID=<id>
 BACKUP_POINT_ID=<backupPointId>
 
 # Filter by a single status value
-curl -sf "http://localhost:3000/api/inventory/Issue?connectionId=${CONNECTION_ID}&backupPointId=${BACKUP_POINT_ID}&status=Done" \
+curl -sf "http://localhost:4000/api/inventory/Issue?connectionId=${CONNECTION_ID}&backupPointId=${BACKUP_POINT_ID}&status=Done" \
   | python3 -m json.tool
 
 # Filter by multiple statuses (Done OR In Progress) — repeat the param
-curl -sf "http://localhost:3000/api/inventory/Issue?connectionId=${CONNECTION_ID}&backupPointId=${BACKUP_POINT_ID}&status=Done&status=In%20Progress" \
+curl -sf "http://localhost:4000/api/inventory/Issue?connectionId=${CONNECTION_ID}&backupPointId=${BACKUP_POINT_ID}&status=Done&status=In%20Progress" \
   | python3 -m json.tool
 ```
 
@@ -668,11 +668,11 @@ Via the API (`q` parameter):
 
 ```bash
 # Exact issue-key lookup
-curl -sf "http://localhost:3000/api/inventory/Issue?connectionId=${CONNECTION_ID}&backupPointId=${BACKUP_POINT_ID}&q=PROJ-42" \
+curl -sf "http://localhost:4000/api/inventory/Issue?connectionId=${CONNECTION_ID}&backupPointId=${BACKUP_POINT_ID}&q=PROJ-42" \
   | python3 -m json.tool
 
 # Tokenized summary search — finds issues whose summary contains both "login" and "error"
-curl -sf "http://localhost:3000/api/inventory/Issue?connectionId=${CONNECTION_ID}&backupPointId=${BACKUP_POINT_ID}&q=login+error" \
+curl -sf "http://localhost:4000/api/inventory/Issue?connectionId=${CONNECTION_ID}&backupPointId=${BACKUP_POINT_ID}&q=login+error" \
   | python3 -m json.tool
 ```
 
@@ -689,11 +689,11 @@ Via the API (`attachmentFilename` parameter):
 
 ```bash
 # Find issues with an attachment whose filename contains "screenshot"
-curl -sf "http://localhost:3000/api/inventory/Issue?connectionId=${CONNECTION_ID}&backupPointId=${BACKUP_POINT_ID}&attachmentFilename=screenshot" \
+curl -sf "http://localhost:4000/api/inventory/Issue?connectionId=${CONNECTION_ID}&backupPointId=${BACKUP_POINT_ID}&attachmentFilename=screenshot" \
   | python3 -m json.tool
 
 # Multi-token search — filename must contain both "report" and "2026"
-curl -sf "http://localhost:3000/api/inventory/Issue?connectionId=${CONNECTION_ID}&backupPointId=${BACKUP_POINT_ID}&attachmentFilename=report+2026" \
+curl -sf "http://localhost:4000/api/inventory/Issue?connectionId=${CONNECTION_ID}&backupPointId=${BACKUP_POINT_ID}&attachmentFilename=report+2026" \
   | python3 -m json.tool
 ```
 
@@ -1029,7 +1029,7 @@ When no sensitive data was found in the backup point the panel shows:
 ```bash
 BACKUP_POINT_ID=<backupPointId-from-inventory>
 
-curl -sf http://localhost:3000/api/backup-points/${BACKUP_POINT_ID}/sdi-teaser \
+curl -sf http://localhost:4000/api/backup-points/${BACKUP_POINT_ID}/sdi-teaser \
   | python3 -m json.tool
 ```
 
@@ -1092,7 +1092,7 @@ against a running local stub (`npm run server`). All three must exit 0.
 # connect-jira-site smoke probe — OAuth path
 set -euo pipefail
 
-PORT=${PORT:-3000}
+PORT=${PORT:-4000}
 BASE="http://localhost:${PORT}"
 SMOKE_CLOUD_ID="smoke-cloud-$(date +%s)"
 
@@ -1143,7 +1143,7 @@ echo "All smoke checks passed."
 # manual-connection smoke probe
 set -euo pipefail
 
-PORT=${PORT:-3000}
+PORT=${PORT:-4000}
 BASE="http://localhost:${PORT}"
 SMOKE_CLIENT_ID="smoke-client-$(date +%s)"
 
@@ -1194,7 +1194,7 @@ echo "All manual-connection smoke checks passed."
 # stub-endpoints smoke probe — GET /api/inventory and POST /api/policies
 set -euo pipefail
 
-PORT=${PORT:-3000}
+PORT=${PORT:-4000}
 BASE="http://localhost:${PORT}"
 SMOKE_CLOUD_ID="smoke-stub-$(date +%s)"
 
@@ -1326,7 +1326,7 @@ echo "All field-context + issue-enumeration smoke checks passed."
 # Requires: running API server (npm run server) for steps 1–4.
 set -euo pipefail
 
-PORT=${PORT:-3000}
+PORT=${PORT:-4000}
 BASE="http://localhost:${PORT}"
 SMOKE_CLOUD_ID="smoke-sprint3-$(date +%s)"
 
@@ -1402,7 +1402,7 @@ echo "All sprint3-deliverables smoke checks passed."
 # Requires: running API server (npm run server).
 set -euo pipefail
 
-PORT=${PORT:-3000}
+PORT=${PORT:-4000}
 BASE="http://localhost:${PORT}"
 DB_PATH="${DB_PATH:-data/jira_workload.db}"
 SMOKE_CLOUD_ID="smoke-inv-$(date +%s)"
@@ -1582,7 +1582,7 @@ echo "All browse-inventory smoke checks passed."
 # Requires: running API server (npm run server).
 set -euo pipefail
 
-PORT=${PORT:-3000}
+PORT=${PORT:-4000}
 BASE="http://localhost:${PORT}"
 SMOKE_CLOUD_ID="smoke-restore-$(date +%s)"
 
@@ -1688,7 +1688,7 @@ echo "All restore-protected-objects smoke checks passed."
 # Requires: running API server (npm run server) for HTTP steps.
 set -euo pipefail
 
-PORT=${PORT:-3000}
+PORT=${PORT:-4000}
 BASE="http://localhost:${PORT}"
 SMOKE_CLOUD_ID="smoke-guards-$(date +%s)"
 
@@ -1805,7 +1805,7 @@ echo "All restore-sprint3-heartbeat smoke checks passed."
 # Requires: running API server (npm run server).
 set -euo pipefail
 
-PORT=${PORT:-3000}
+PORT=${PORT:-4000}
 BASE="http://localhost:${PORT}"
 DB_PATH="${DB_PATH:-data/jira_workload.db}"
 BACKUP_POINT_ID="smoke-sdi-bp-$(date +%s)"

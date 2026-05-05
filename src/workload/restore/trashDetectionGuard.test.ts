@@ -32,7 +32,7 @@ function makeNonTrashedChecker(): TrashChecker {
 // ---------------------------------------------------------------------------
 
 describe('runTrashDetection', () => {
-  let consoleSpy: ReturnType<typeof vi.spyOn>;
+  let consoleSpy: { mockRestore(): void };
 
   beforeEach(() => {
     consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);

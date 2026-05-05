@@ -17,7 +17,7 @@
 # Unit-test steps use vitest and do not require a live server.
 set -euo pipefail
 
-PORT=${PORT:-3000}
+PORT=${PORT:-4000}
 BASE="http://localhost:${PORT}"
 SMOKE_CLOUD_ID="smoke-backup-$(date +%s)"
 

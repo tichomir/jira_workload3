@@ -26,7 +26,7 @@ import type {
   RestoreOptions,
 } from '../platform_workload_iface.js';
 import type { Connection } from '../types/connection.js';
-import type { BackupManifest, CaptureProgressEvent } from './backup/types.js';
+import type { BackupManifest } from './backup/types.js';
 
 // ---------------------------------------------------------------------------
 // Typed error surfaces

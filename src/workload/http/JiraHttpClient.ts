@@ -5,6 +5,7 @@ import type {
   JqlSearchRequest,
   JqlSearchResponse,
   AttachmentDownload,
+  RawIssue,
 } from '../backup/types.js';
 
 const ATLASSIAN_TOKEN_URL = 'https://auth.atlassian.com/oauth/token';
