@@ -94,6 +94,8 @@ export interface ObjectTypeEntry {
   count: number;
   /** ISO-8601 timestamp of the most recent backup point, or null when none exists. */
   lastBackupAt: string | null;
+  /** true when ≥1 JSM (service_desk) project was excluded from this type's count. */
+  jsmExcluded: boolean;
 }
 
 /**

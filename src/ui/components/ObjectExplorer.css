@@ -225,6 +225,48 @@
   border-radius: 3px;
 }
 
+.obj-exp__trace-id-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* ── Copy button ─────────────────────────────────────────────── */
+.obj-exp__copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1;
+  color: #0052cc;
+  background: #ffffff;
+  border: 1px solid #b3d4ff;
+  border-radius: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.1s ease, border-color 0.1s ease, color 0.1s ease;
+}
+
+.obj-exp__copy-btn:hover {
+  background: #e8f0fe;
+  border-color: #0052cc;
+}
+
+.obj-exp__copy-btn--copied {
+  color: #006644;
+  background: #e3fcef;
+  border-color: #79f2c0;
+}
+
+.obj-exp__copy-btn--copied:hover {
+  background: #e3fcef;
+  border-color: #006644;
+}
+
 /* ── Loading skeleton ────────────────────────────────────────── */
 .obj-exp__skeleton-row {
   display: flex;
@@ -286,4 +328,267 @@
 @keyframes obj-exp-pulse {
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.45; }
+}
+
+/* ── Search bar ──────────────────────────────────────────────────── */
+.obj-exp__search-bar {
+  padding: 10px 16px;
+  border-bottom: 1px solid #f4f5f7;
+  background: #fcfcfd;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.obj-exp__search-row {
+  display: flex;
+  gap: 10px;
+}
+
+.obj-exp__search-field {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.obj-exp__search-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b778c;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.obj-exp__search-input {
+  width: 100%;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: #172b4d;
+  background: #ffffff;
+  border: 1px solid #c1c7d0;
+  border-radius: 4px;
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color 0.1s ease, box-shadow 0.1s ease;
+}
+
+.obj-exp__search-input:focus {
+  border-color: #0052cc;
+  box-shadow: 0 0 0 2px rgba(0, 82, 204, 0.12);
+}
+
+.obj-exp__search-input::placeholder {
+  color: #a5adba;
+}
+
+/* ── Filter toggle row ───────────────────────────────────────────── */
+.obj-exp__filter-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.obj-exp__filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #42526e;
+  background: #f4f5f7;
+  border: 1px solid #dfe1e6;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.1s ease, border-color 0.1s ease, color 0.1s ease;
+}
+
+.obj-exp__filter-toggle:hover {
+  background: #ebecf0;
+  border-color: #b3bac5;
+}
+
+.obj-exp__filter-toggle--open {
+  color: #0052cc;
+  background: #e8f0fe;
+  border-color: #b3d4ff;
+}
+
+.obj-exp__filter-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #ffffff;
+  background: #0052cc;
+  border-radius: 8px;
+  line-height: 1;
+}
+
+.obj-exp__filter-clear {
+  padding: 3px 8px;
+  font-size: 12px;
+  color: #de350b;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.1s ease, border-color 0.1s ease;
+}
+
+.obj-exp__filter-clear:hover {
+  background: #ffebe6;
+  border-color: #ffbdad;
+}
+
+/* ── Filter panel ────────────────────────────────────────────────── */
+.obj-exp__filter-panel {
+  padding: 10px 0 2px;
+  border-top: 1px solid #ebecf0;
+}
+
+.obj-exp__filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+  gap: 10px;
+}
+
+/* ── Facet container ─────────────────────────────────────────────── */
+.obj-exp__facet {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.obj-exp__facet--date {
+  grid-column: span 2;
+}
+
+.obj-exp__facet-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b778c;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+/* ── Tag box ─────────────────────────────────────────────────────── */
+.obj-exp__tag-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  background: #ffffff;
+  border: 1px solid #c1c7d0;
+  border-radius: 4px;
+  min-height: 32px;
+  cursor: text;
+  transition: border-color 0.1s ease, box-shadow 0.1s ease;
+}
+
+.obj-exp__tag-box:focus-within {
+  border-color: #0052cc;
+  box-shadow: 0 0 0 2px rgba(0, 82, 204, 0.12);
+}
+
+/* ── Tag pill ────────────────────────────────────────────────────── */
+.obj-exp__tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 3px 1px 6px;
+  background: #deebff;
+  border-radius: 3px;
+  font-size: 11px;
+  color: #0052cc;
+  max-width: 130px;
+  white-space: nowrap;
+}
+
+.obj-exp__tag-val {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.obj-exp__tag-rm {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+  color: #0052cc;
+  background: none;
+  border: none;
+  border-radius: 2px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.1s ease;
+}
+
+.obj-exp__tag-rm:hover {
+  background: #b3d4ff;
+}
+
+/* ── Tag draft input ─────────────────────────────────────────────── */
+.obj-exp__tag-input {
+  flex: 1;
+  min-width: 60px;
+  padding: 0 2px;
+  font-size: 12px;
+  color: #172b4d;
+  background: none;
+  border: none;
+  outline: none;
+  line-height: 22px;
+}
+
+.obj-exp__tag-input::placeholder {
+  color: #a5adba;
+}
+
+/* ── Date range ──────────────────────────────────────────────────── */
+.obj-exp__date-range {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.obj-exp__date-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.obj-exp__date-label {
+  font-size: 11px;
+  color: #6b778c;
+}
+
+.obj-exp__date-input {
+  padding: 5px 8px;
+  font-size: 12px;
+  color: #172b4d;
+  background: #ffffff;
+  border: 1px solid #c1c7d0;
+  border-radius: 4px;
+  outline: none;
+  transition: border-color 0.1s ease, box-shadow 0.1s ease;
+}
+
+.obj-exp__date-input:focus {
+  border-color: #0052cc;
+  box-shadow: 0 0 0 2px rgba(0, 82, 204, 0.12);
 }

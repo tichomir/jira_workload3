@@ -481,7 +481,12 @@ Two files are written per attachment:
 | `data/attachments/{backupPointId}/{issueKey}/{attachmentId}` | Raw binary — opaque bytes |
 | `data/attachments/{backupPointId}/{issueKey}/{attachmentId}.meta.json` | Sidecar metadata JSON |
 
-Type stubs: `src/workload/types/Attachment.ts` — `Attachment`, `AttachmentStoragePaths`,
+**Both paths are real and shipped** (Phase 2 Sprint 3). Path resolution is performed by
+`resolveAttachmentPaths()` in `src/workload/types/Attachment.ts`; disk writes are in
+`src/workload/snapshot/downloadIssueAttachments.ts`. The default base directory
+(`data/attachments`) can be overridden via `DCC_ATTACHMENT_DIR` in `.env`.
+
+Contracts (`src/workload/types/Attachment.ts`): `Attachment`, `AttachmentStoragePaths`,
 `AttachmentSidecar`, `resolveAttachmentPaths`.
 
 ### Path Scheme
@@ -543,7 +548,7 @@ incoming project list against the persisted previous manifest. Each
 prior backup point. The diff is stored as a `ManifestDiff` record alongside the
 new `BackupManifest`.
 
-Type stubs: `src/workload/types/ManifestDiff.ts` — `ChangeBadge`,
+Contracts (`src/workload/types/ManifestDiff.ts`): `ChangeBadge`,
 `ProjectDiffEntry`, `ManifestDiffSummary`, `ManifestDiff`.
 
 ### ChangeBadge Computation
@@ -603,7 +608,7 @@ Both backup (`CaptureOrchestrator`) and restore jobs emit `ProgressEvent`
 objects on a heartbeat cadence. The platform layer handles them uniformly
 regardless of job type.
 
-Type stubs: `src/workload/types/ProgressEvent.ts` — `ProgressEvent`,
+Contracts (`src/workload/types/ProgressEvent.ts`): `ProgressEvent`,
 `ProgressError`, `JobStatus`, `MAX_HEARTBEAT_INTERVAL_MS`, `STALLED_THRESHOLD_MS`.
 
 ### Event Shape
@@ -673,7 +678,7 @@ A `PolicyRecord` is created or replaced by `POST /api/policies`. It extends
 the previously documented request body with `rpoHours` (which drives the
 platform backup schedule) and an optional `jqlFilter` validated before storage.
 
-Type stubs: `src/workload/types/PolicyRecord.ts` — `PolicyRecord`,
+Contracts (`src/workload/types/PolicyRecord.ts`): `PolicyRecord`,
 `PolicyRequest`, `JqlParseRequest`, `JqlParseResponse`.
 
 ### PolicyRecord Shape
@@ -784,19 +789,18 @@ Atlassian REST API at browse time.
                                │ SQLite read  (zero Atlassian calls)
                                ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  InventoryRepository                                                │
-│  (src/workload/inventory/InventoryRepository.ts)                    │
+│  Inventory Handlers  (inline — no separate repository class)        │
+│  (src/routes/inventory.ts)                                          │
 │                                                                     │
-│  getObjectTypes(connectionId)                                       │
-│    ► loads latest BackupManifest for connection                     │
+│  handleGetInventory(req, res)                                       │
+│    ► loads latest BackupManifest from backup_manifests              │
 │    ► counts each type; strips JSM-deferred project entries          │
-│    ► returns InventoryObjectTypesResponse                           │
+│    ► returns InventoryResponse                                      │
 │                                                                     │
-│  getItems(connectionId, type, opts)                                 │
-│    ► loads manifest (optionally pinned by backupPointId)            │
-│    ► slices the relevant collection with limit/offset               │
-│    ► projects each raw record to InventoryItem / IssueInventoryItem │
-│    ► filters out items belonging to JSM-deferred projects           │
+│  handleGetInventoryByType(req, res)                                 │
+│    ► reads backup_point_items rows for (connectionId, backupPointId,│
+│      objectType) — with filter, search, and JSM-exclusion applied   │
+│    ► projects each row to InventoryItem                             │
 │    ► returns InventoryItemsResponse                                 │
 └──────────────────────────────┬──────────────────────────────────────┘
                                │
@@ -814,10 +818,18 @@ Atlassian REST API at browse time.
 
 ### Boundary Rule
 
-`InventoryRepository` reads only from the SQLite tables written by the snapshot
-phase (`backup_manifests`, `backup_jobs`). It must never construct or execute any
-HTTP request to the Atlassian REST API. All inventory data reflects the state
-captured during the most recent successful snapshot for the given `connectionId`.
+The inventory handlers in `src/routes/inventory.ts` read only from the SQLite
+tables written by the snapshot phase. The two relevant tables are:
+
+- `backup_manifests` — stores `BackupManifest` JSON blobs (JSM deferred list,
+  project/field counts, coverage invariant). Used by both handlers.
+- `backup_point_items` — per-object-type item rows written during the snapshot
+  phase. Used by `handleGetInventoryByType` as the primary item source for all
+  paginated listings.
+
+Neither handler constructs or executes any HTTP request to the Atlassian REST
+API. All inventory data reflects the state captured during the most recent
+successful snapshot for the given `connectionId`.
 
 ### JSM Exclusion Rule
 
@@ -828,7 +840,7 @@ Projects, Issues, Boards, and Sprints that belong to a project where
 - `items[]` in `GET /api/inventory/:type` never contains JSM items.
 
 The driving manifest field is `BackupManifest.jsmDeferredProjects[]`. Any item
-whose `projectId` appears in that array is filtered inside `InventoryRepository`
+whose `projectId` appears in that array is filtered inside the inventory handlers
 before the response is built. Callers cannot override this filter.
 
 ---
@@ -1038,14 +1050,17 @@ export function handleGetInventoryByType(req: Request, res: Response): void;
 
 **Data sourcing per type:**
 
-| Object Type | Primary manifest source | ID field |
-|-------------|------------------------|---------|
-| `Issue` | Per-issue rows in the backup store; `IssueRecord` from `backup_manifests` | `IssueRecord.id` |
-| `Project` | `BackupManifest.projects[]` — `ProjectRecord` array | `ProjectRecord.projectId` |
-| `Board` | `ProjectRecord.boardIds[]` aggregated across all non-JSM projects | Board ID string |
-| `Sprint` | `ProjectRecord.sprintIds[]` aggregated across all non-JSM projects | Sprint ID string |
-| `Workflow` | Phase result stored with manifest (Workflow capture phase) | Workflow ID |
-| `CustomField` | `BackupManifest.fieldContexts[]` — `FieldContextRecord` array | `FieldContextRecord.fieldId` |
+All paginated item lists are sourced from the `backup_point_items` table
+(migration `011_inventory_items.sql`). Rows are filtered by
+`(connectionId, backupPointId, objectType)`. JSM-deferred project IDs and keys
+are loaded from the `backup_manifests` row for defense-in-depth exclusion.
+
+| Object Type | `objectType` value in `backup_point_items` | ID field (`itemId`) |
+|-------------|-------------------------------------------|---------------------|
+| `Issue` | `'Issue'` | Jira issue key, e.g. `"PROJ-42"` |
+| `Project` | `'Project'` | Atlassian project ID |
+| `Board` | `'Board'` | Board ID string |
+| `Sprint` | `'Sprint'` | Sprint ID string |
 
 **Key files:**
 
@@ -1081,6 +1096,101 @@ satisfies the traceability requirement (T5 §6.2, T8 §3).
 - For Issues: `backupPointId` is sourced from `IssueRecord.backupPointId`.
 - For all other types: `backupPointId` is sourced from the
   `backup_jobs.backupPointId` column that owns the manifest.
+
+---
+
+### Inventory Browse Contracts
+
+This subsection codifies the precise query-parameter contracts for the filter,
+search, traceability, and JSM-exclusion extensions to `GET /api/inventory/:type`.
+These are the net-new structures introduced in Phase 3 Sprint 2.
+
+#### Filter Facet Parameters (`:type === 'Issue'`)
+
+When `:type === 'Issue'`, the handler accepts the following filter parameters in
+addition to `connectionId`, `backupPointId`, `limit`, and `offset`:
+
+| Parameter | Type | Multi-value | Semantics |
+|-----------|------|-------------|-----------|
+| `status` | `string` | Yes (OR) | Match issues where `status.name` equals any supplied value. Case-insensitive. |
+| `issueType` | `string` | Yes (OR) | Match issues where `issueType.name` equals any supplied value. Case-insensitive. |
+| `assignee` | `string` | Yes (OR) | Match issues where `assignee.accountId` equals any supplied value. Issues with no assignee are excluded when this param is present. |
+| `sprint` | `string` | Yes (OR) | Match issues where `sprintIds[]` contains any of the supplied sprint IDs. |
+| `board` | `string` | Yes (OR) | Match issues that belong to any of the supplied board IDs. |
+| `label` | `string` | Yes (**AND**) | Match issues where `labels[]` contains **all** supplied label values. |
+| `priority` | `string` | Yes (OR) | Match issues where `priority.name` equals any supplied value. Case-insensitive. |
+| `updatedFrom` | `string` (ISO-8601) | No | Include issues where `updated >= updatedFrom`. |
+| `updatedTo` | `string` (ISO-8601) | No | Include issues where `updated <= updatedTo`. |
+
+**Combining rules**: filter parameters are AND-combined across types (e.g.
+`status=Done&issueType=Bug` requires both). Within a single repeatable parameter,
+values are OR-combined (except `label`, which is AND-combined). All filter
+parameters are optional; omitting a parameter applies no constraint for that
+dimension.
+
+#### Issue Search Parameters (`:type === 'Issue'`)
+
+| Parameter | Semantics |
+|-----------|-----------|
+| `q` | Dual-mode search. If the value matches `[A-Z][A-Z0-9_]+-\d+`, performs **exact-match** on `itemId` (Issue key lookup; returns at most one result). Otherwise, tokenizes on whitespace; all tokens must appear in `LOWER(summary)` (AND across tokens, case-insensitive summary search). |
+| `attachmentFilename` | **Tokenized partial-match** against the `attachments` JSON array column. Query is split on whitespace; each token is matched as a case-insensitive substring of each stored filename (AND across tokens). Returns the parent Issue when any attachment filename satisfies all tokens. |
+
+#### Body-Content Search — Explicitly Disabled (Phase 1)
+
+Full-text search across ADF `description` and `comments[].body` is **explicitly
+disabled in Phase 1** (T8 §3). This is a hard non-contract, not a deferred backlog
+item. The route **must** return HTTP 400 if any body-search query parameter is
+supplied:
+
+```json
+{ "error": "body_search_disabled", "message": "Full-text search across ADF description and comment body is not supported in Phase 1." }
+```
+
+No partial implementation of ADF body search is permitted.
+
+#### JSM Exclusion Rule — InventoryRepository Boundary
+
+The JSM exclusion filter is applied at the data boundary — before any response
+object is constructed — using the following rule:
+
+```
+If item.projectId ∈ BackupManifest.jsmDeferredProjects[].projectId:
+  → exclude item from all inventory responses
+
+Implementation:
+  1. Load BackupManifest.jsmDeferredProjects[] from the persisted manifest.
+  2. Build: excludedProjectIds = new Set(jsmDeferredProjects.map(p => p.projectId))
+  3. Keep item only when item.projectId ∉ excludedProjectIds.
+```
+
+`jsmDeferredProjects[]` is populated during the Discover phase: any project where
+`projectTypeKey === 'service_desk'` is written to `jsmDeferredProjects` (with
+`reason: 'PHASE_2_DEFERRED'`) rather than `projects`. The inventory handler reads
+this array from the persisted manifest at query time.
+
+The filter is unconditional at both response layers:
+
+- **`GET /api/inventory`** — `objectTypes[].count` never includes JSM items;
+  `jsmExcluded: true` is set when ≥1 project was excluded.
+- **`GET /api/inventory/:type`** — `items[]` never contains any item whose
+  `projectId` appears in `jsmDeferredProjects[]`.
+
+Callers cannot override or bypass this filter (T1 §1, T2 §6 Constraint 11,
+T3 §3.2).
+
+#### Traceability Contract
+
+Every `InventoryItem` returned by `GET /api/inventory/:type` carries two
+traceability fields regardless of object type:
+
+| Field | Type | Source |
+|-------|------|--------|
+| `backupPointId` | `string` (UUID) | The `backupPointId` query parameter echoed back verbatim; identifies the backup point that produced this item. |
+| `backupPointTimestamp` | `string` (ISO-8601) | The `capturedAt` value from the `backup_point_items` row — the moment the item was written to the backup store. |
+
+Both fields are always present — never `null`, never omitted. A single UI click on
+any Object Explorer row uses these fields to navigate to the backup-point detail
+view (UUID, completion timestamp, job status), satisfying T5 §6.2 and T8 §3.
 
 ---
 

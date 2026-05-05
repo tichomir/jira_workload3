@@ -33,6 +33,7 @@ Edit `.env`:
 | `ATLASSIAN_CLIENT_SECRET` | OAuth app Client Secret |
 | `OAUTH_REDIRECT_URI` | Callback URL registered in the Atlassian developer console |
 | `PORT` | API server port (default `3000`) |
+| `DCC_ATTACHMENT_DIR` | _(optional)_ Override directory for attachment binary storage (default: `data/attachments`). Set to an absolute path to redirect storage to an external volume, e.g. `/mnt/backup-volume/attachments`. |
 
 ### HTTPS callback requirement
 

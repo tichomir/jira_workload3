@@ -4,6 +4,68 @@ All notable changes are documented here by sprint.
 
 ---
 
+## [Phase 3 Sprint 2] — 2026-05-05 — Inventory Filters, Search & Traceability
+
+### Added
+
+#### `GET /api/inventory/:type` — Issue filter facets and keyword search — `src/routes/inventory.ts`
+
+Extended the paginated item endpoint with structured filter facets and keyword search for
+`Issue` items. All filter params are silently ignored for non-Issue types.
+
+**Structured filter facets** (OR semantics within a facet, AND across facets):
+
+| Query param | Maps to column | Accepts |
+|---|---|---|
+| `status` | `status` | One or more Issue status values |
+| `issueType` | `issueType` | One or more Issue type names (Bug, Story, Task, …) |
+| `assignee` | `assignee` | One or more assignee account IDs |
+| `sprint` | `sprintId` | One or more sprint IDs |
+| `board` | `boardId` | One or more board IDs |
+| `label` | `labels` (JSON array) | One or more label strings; matched via `json_each` |
+| `priority` | `priority` | One or more priority names |
+| `updatedFrom` | `updatedAt` | ISO-8601 date; items with `updatedAt >= value` |
+| `updatedTo` | `updatedAt` | ISO-8601 date; items with `updatedAt <= value` |
+
+`updatedFrom` and `updatedTo` are validated for ISO-8601 format before SQL execution;
+HTTP 400 `{ "error": "invalid_date_format" }` returned on bad input.
+
+**Keyword search (`q`):**
+- Pattern `[A-Z][A-Z0-9_]+-\d+` → exact-match on `itemId` (Issue key lookup).
+- All other values → tokenized on whitespace; each token must appear in
+  `LOWER(summary) LIKE ?` (AND across tokens, case-insensitive).
+- Body-content search (ADF description/comment text) is explicitly not supported.
+
+**Attachment filename search (`attachmentFilename`):**
+- Tokenizes the value on whitespace; every token must appear case-insensitively in at
+  least one filename entry in the `attachments` JSON array column (AND across tokens).
+
+**JSM exclusion — defense-in-depth at item query layer:**
+- Issue items: project key prefix extracted from `itemId` via
+  `SUBSTR(itemId, 1, INSTR(itemId, '-') - 1) NOT IN (<jsm_project_keys>)`.
+- Project items: `itemId NOT IN (<jsm_project_ids>)`.
+- JSM project keys/IDs sourced from `manifest.jsmDeferredProjects` parsed from the
+  backup manifest row; each exclusion emits
+  `[inventory] jsm_excluded projectKey=<key> reason=service_desk`.
+
+#### Database migrations
+
+- `src/db/migrations/012_inventory_items_facets.sql` — adds nullable facet columns to
+  `backup_point_items` via `ALTER TABLE … ADD COLUMN`: `status TEXT`, `issueType TEXT`,
+  `assignee TEXT`, `priority TEXT`, `updatedAt TEXT`, `sprintId TEXT`, `boardId TEXT`,
+  `labels TEXT` (JSON array). All columns nullable; existing rows default to `NULL`.
+- `src/db/migrations/013_inventory_items_attachments.sql` — adds nullable
+  `attachments TEXT` column (JSON array of attachment filename strings) to
+  `backup_point_items`. `NULL` for Issues with no attachments; existing rows default
+  to `NULL`.
+
+### No new environment variables
+No new environment variables are introduced in this sprint.
+The `DCC_ATTACHMENT_DIR` documentation gap (key introduced Sprint 3 Phase 2, omitted
+from `INSTALL.md` §2 env table at that time) is resolved in this sprint.
+
+---
+
 ## [Phase 3 Sprint 1] — 2026-05-04 — Inventory API & Sidebar (Protected Object Browse Flow)
 
 ### Added

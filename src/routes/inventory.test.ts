@@ -41,6 +41,14 @@ function createTestDb(): Database.Database {
       summary       TEXT,
       changeBadge   TEXT    NOT NULL DEFAULT 'unchanged' CHECK (changeBadge IN ('added', 'modified', 'deleted', 'unchanged')),
       capturedAt    TEXT    NOT NULL,
+      status        TEXT,
+      issueType     TEXT,
+      assignee      TEXT,
+      priority      TEXT,
+      updatedAt     TEXT,
+      sprintId      TEXT,
+      boardId       TEXT,
+      labels        TEXT,
       FOREIGN KEY (connectionId) REFERENCES connections(connectionId) ON DELETE CASCADE,
       FOREIGN KEY (backupPointId) REFERENCES backup_manifests(id) ON DELETE CASCADE
     );
@@ -461,6 +469,48 @@ describe('buildInventoryResponse', () => {
     const issueEntry = result.objectTypes.find(e => e.type === 'Issue');
     expect(issueEntry?.count).toBe(7);
   });
+
+  it('jsmExcluded is false on all entries when no JSM projects are deferred', () => {
+    const manifest = makeManifest({
+      projects: [
+        {
+          projectId: 'p1', projectKey: 'PROJ', projectName: 'PROJ',
+          projectTypeKey: 'software',
+          issueCounts: { total: 0, backed: 0, errored: 0 },
+          boardIds: [],
+          sprintIds: [],
+          changeBadge: 'added',
+        },
+      ],
+      jsmDeferredProjects: [],
+    });
+
+    const result = buildInventoryResponse(manifest);
+    result.objectTypes.forEach(entry => {
+      expect(entry.jsmExcluded).toBe(false);
+    });
+  });
+
+  it('jsmExcluded is true on all entries when ≥1 JSM project is deferred', () => {
+    const manifest = makeManifest({
+      projects: [],
+      jsmDeferredProjects: [
+        { projectId: 'p-jsm', projectKey: 'HELP', projectName: 'Help Desk', reason: 'PHASE_2_DEFERRED' },
+      ],
+    });
+
+    const result = buildInventoryResponse(manifest);
+    result.objectTypes.forEach(entry => {
+      expect(entry.jsmExcluded).toBe(true);
+    });
+  });
+
+  it('jsmExcluded is false on all entries when manifest is null', () => {
+    const result = buildInventoryResponse(null);
+    result.objectTypes.forEach(entry => {
+      expect(entry.jsmExcluded).toBe(false);
+    });
+  });
 });
 
 // ===========================================================================
@@ -684,7 +734,25 @@ describe('GET /api/inventory/Issue — item shape', () => {
     expect(item['summary']).toBe('');
   });
 
-  it('Project items do not include summary field', () => {
+  it('Issue items include projectKey and issueNumber extracted from the issue key', () => {
+    db.prepare(
+      `INSERT INTO backup_point_items
+         (connectionId, backupPointId, objectType, itemId, displayName, summary, changeBadge, capturedAt)
+       VALUES (?, ?, 'Issue', 'ALPHA-42', 'ALPHA-42', 'Some issue', 'unchanged', ?)`
+    ).run(INV_CONN_ID, INV_BP_ID, INV_CAPTURED_AT);
+
+    const mock = makeRes();
+    handleGetInventoryByType(
+      makeTypeReq({ type: 'Issue' }, { connectionId: INV_CONN_ID, backupPointId: INV_BP_ID }),
+      mock.res
+    );
+
+    const item = (mock.jsonBody() as { items: Array<Record<string, unknown>> }).items[0];
+    expect(item['projectKey']).toBe('ALPHA');
+    expect(item['issueNumber']).toBe(42);
+  });
+
+  it('Project items do not include summary, projectKey, or issueNumber fields', () => {
     db.prepare(
       `INSERT INTO backup_point_items
          (connectionId, backupPointId, objectType, itemId, displayName, summary, changeBadge, capturedAt)
@@ -699,6 +767,8 @@ describe('GET /api/inventory/Issue — item shape', () => {
 
     const item = (mock.jsonBody() as { items: Array<Record<string, unknown>> }).items[0];
     expect('summary' in item).toBe(false);
+    expect('projectKey' in item).toBe(false);
+    expect('issueNumber' in item).toBe(false);
     expect(item['changeBadge']).toBe('added');
   });
 
@@ -1143,5 +1213,1304 @@ describe('GET /api/inventory/:type — single-click traceability', () => {
       expect(item['backupPointId']).toBe(TRACE_BP_ID);
       expect(item['backupPointTimestamp']).toBe(TRACE_TS);
     });
+  });
+});
+
+// ===========================================================================
+// JSM project exclusion — GET /api/inventory/:type
+// ===========================================================================
+
+const JSM_CONN_ID = 'jsm-excl-conn-001';
+const JSM_CLOUD_ID = 'cloud-jsm-excl-001';
+const JSM_BP_ID = 'bp-jsm-excl-001';
+const JSM_CAPTURED_AT = '2026-05-04T10:00:00.000Z';
+
+function seedJsmConnection(db: Database.Database): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO connections (connectionId, cloudId, siteName, status, createdAt, updatedAt)
+     VALUES (?, ?, ?, 'active', ?, ?)`
+  ).run(JSM_CONN_ID, JSM_CLOUD_ID, 'JSM Excl Site', now, now);
+}
+
+function seedManifestWithJsmDeferred(
+  db: Database.Database,
+  jsmProjects: Array<{ projectId: string; projectKey: string }>,
+  id = JSM_BP_ID
+): void {
+  const manifest = {
+    manifestId: id,
+    cloudId: JSM_CLOUD_ID,
+    discoveredAt: JSM_CAPTURED_AT,
+    projectScope: 'all',
+    selectedProjectKeys: [],
+    projects: [],
+    jsmDeferredProjects: jsmProjects.map(p => ({
+      projectId: p.projectId,
+      projectKey: p.projectKey,
+      projectName: `JSM ${p.projectKey}`,
+      reason: 'PHASE_2_DEFERRED',
+    })),
+    fieldContexts: null,
+    customFieldsCaptured: null,
+    customFieldsSkipped: [],
+    coverageInvariant: null,
+    diffSummary: null,
+  };
+  db.prepare(
+    `INSERT INTO backup_manifests (id, connectionId, cloudId, createdAt, manifestJson)
+     VALUES (?, ?, ?, ?, ?)`
+  ).run(id, JSM_CONN_ID, JSM_CLOUD_ID, JSM_CAPTURED_AT, JSON.stringify(manifest));
+}
+
+describe('GET /api/inventory/:type — JSM project exclusion', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+    _setDbForTesting(db);
+    seedJsmConnection(db);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    _resetDb();
+  });
+
+  it('happy-path: excludes JSM project item from Project listing (mixed software + JSM)', () => {
+    seedManifestWithJsmDeferred(db, [{ projectId: 'jsm-proj-id', projectKey: 'JSMP' }]);
+
+    const insertItem = db.prepare(
+      `INSERT INTO backup_point_items
+         (connectionId, backupPointId, objectType, itemId, displayName, changeBadge, capturedAt)
+       VALUES (?, ?, 'Project', ?, ?, 'added', ?)`
+    );
+    insertItem.run(JSM_CONN_ID, JSM_BP_ID, 'sw-proj-id', 'SWPROJ', JSM_CAPTURED_AT);
+    insertItem.run(JSM_CONN_ID, JSM_BP_ID, 'jsm-proj-id', 'JSMP', JSM_CAPTURED_AT); // must be excluded
+
+    const mock = makeRes();
+    handleGetInventoryByType(
+      makeTypeReq({ type: 'Project' }, { connectionId: JSM_CONN_ID, backupPointId: JSM_BP_ID }),
+      mock.res
+    );
+
+    expect(mock.statusCode()).toBe(200);
+    const body = mock.jsonBody() as { items: Array<Record<string, unknown>>; pagination: { total: number } };
+    expect(body.pagination.total).toBe(1);
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]['id']).toBe('sw-proj-id');
+  });
+
+  it('happy-path: excludes JSM issues from Issue listing by project key prefix', () => {
+    seedManifestWithJsmDeferred(db, [{ projectId: 'jsm-proj-id', projectKey: 'JSMP' }]);
+
+    const insertItem = db.prepare(
+      `INSERT INTO backup_point_items
+         (connectionId, backupPointId, objectType, itemId, displayName, summary, changeBadge, capturedAt)
+       VALUES (?, ?, 'Issue', ?, ?, ?, 'unchanged', ?)`
+    );
+    insertItem.run(JSM_CONN_ID, JSM_BP_ID, 'SWPROJ-1', 'SWPROJ-1', 'SW issue 1', JSM_CAPTURED_AT);
+    insertItem.run(JSM_CONN_ID, JSM_BP_ID, 'SWPROJ-2', 'SWPROJ-2', 'SW issue 2', JSM_CAPTURED_AT);
+    insertItem.run(JSM_CONN_ID, JSM_BP_ID, 'JSMP-1', 'JSMP-1', 'JSM issue 1', JSM_CAPTURED_AT); // must be excluded
+    insertItem.run(JSM_CONN_ID, JSM_BP_ID, 'JSMP-2', 'JSMP-2', 'JSM issue 2', JSM_CAPTURED_AT); // must be excluded
+
+    const mock = makeRes();
+    handleGetInventoryByType(
+      makeTypeReq({ type: 'Issue' }, { connectionId: JSM_CONN_ID, backupPointId: JSM_BP_ID }),
+      mock.res
+    );
+
+    expect(mock.statusCode()).toBe(200);
+    const body = mock.jsonBody() as { items: Array<Record<string, unknown>>; pagination: { total: number } };
+    expect(body.pagination.total).toBe(2);
+    expect(body.items).toHaveLength(2);
+    const ids = body.items.map((it) => it['id'] as string);
+    expect(ids).toContain('SWPROJ-1');
+    expect(ids).toContain('SWPROJ-2');
+    expect(ids).not.toContain('JSMP-1');
+    expect(ids).not.toContain('JSMP-2');
+  });
+
+  it('error-path: all-JSM site returns 200 with zero Project count (not 500)', () => {
+    seedManifestWithJsmDeferred(db, [
+      { projectId: 'jsm-p1', projectKey: 'HELP' },
+      { projectId: 'jsm-p2', projectKey: 'ITSM' },
+    ]);
+    const insertItem = db.prepare(
+      `INSERT INTO backup_point_items
+         (connectionId, backupPointId, objectType, itemId, displayName, changeBadge, capturedAt)
+       VALUES (?, ?, 'Project', ?, ?, 'added', ?)`
+    );
+    insertItem.run(JSM_CONN_ID, JSM_BP_ID, 'jsm-p1', 'HELP', JSM_CAPTURED_AT);
+    insertItem.run(JSM_CONN_ID, JSM_BP_ID, 'jsm-p2', 'ITSM', JSM_CAPTURED_AT);
+
+    const mock = makeRes();
+    handleGetInventoryByType(
+      makeTypeReq({ type: 'Project' }, { connectionId: JSM_CONN_ID, backupPointId: JSM_BP_ID }),
+      mock.res
+    );
+
+    expect(mock.statusCode()).toBe(200);
+    const body = mock.jsonBody() as { items: unknown[]; pagination: { total: number } };
+    expect(body.pagination.total).toBe(0);
+    expect(body.items).toHaveLength(0);
+  });
+
+  it('error-path: all-JSM site returns 200 with zero Issue count (not 500)', () => {
+    seedManifestWithJsmDeferred(db, [{ projectId: 'jsm-p1', projectKey: 'HELP' }]);
+    const insertItem = db.prepare(
+      `INSERT INTO backup_point_items
+         (connectionId, backupPointId, objectType, itemId, displayName, summary, changeBadge, capturedAt)
+       VALUES (?, ?, 'Issue', ?, ?, ?, 'added', ?)`
+    );
+    insertItem.run(JSM_CONN_ID, JSM_BP_ID, 'HELP-1', 'HELP-1', 'JSM issue 1', JSM_CAPTURED_AT);
+    insertItem.run(JSM_CONN_ID, JSM_BP_ID, 'HELP-2', 'HELP-2', 'JSM issue 2', JSM_CAPTURED_AT);
+
+    const mock = makeRes();
+    handleGetInventoryByType(
+      makeTypeReq({ type: 'Issue' }, { connectionId: JSM_CONN_ID, backupPointId: JSM_BP_ID }),
+      mock.res
+    );
+
+    expect(mock.statusCode()).toBe(200);
+    const body = mock.jsonBody() as { items: unknown[]; pagination: { total: number } };
+    expect(body.pagination.total).toBe(0);
+    expect(body.items).toHaveLength(0);
+  });
+
+  it('emits per-project log lines for each JSM deferred project', () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    seedManifestWithJsmDeferred(db, [
+      { projectId: 'jsm-p1', projectKey: 'HELP' },
+      { projectId: 'jsm-p2', projectKey: 'ITSM' },
+    ]);
+
+    handleGetInventoryByType(
+      makeTypeReq({ type: 'Project' }, { connectionId: JSM_CONN_ID, backupPointId: JSM_BP_ID }),
+      makeRes().res
+    );
+
+    const logCalls = logSpy.mock.calls.map((args) => String(args[0]));
+    const jsmLogs = logCalls.filter((s) => s.includes('jsm_excluded'));
+    expect(jsmLogs).toHaveLength(2);
+    expect(jsmLogs.some((s) => s.includes('projectKey=HELP') && s.includes('reason=service_desk'))).toBe(true);
+    expect(jsmLogs.some((s) => s.includes('projectKey=ITSM') && s.includes('reason=service_desk'))).toBe(true);
+  });
+});
+
+// ===========================================================================
+// Per-project JSM log lines — GET /api/inventory
+// ===========================================================================
+
+describe('GET /api/inventory — per-project JSM log lines', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+    _setDbForTesting(db);
+    seedConnection(db);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    _resetDb();
+  });
+
+  it('emits per-project log line for each JSM-deferred project', () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const manifest = makeManifest({
+      jsmDeferredProjects: [
+        { projectId: 'p-jsm1', projectKey: 'DESK', projectName: 'Service Desk 1', reason: 'PHASE_2_DEFERRED' },
+        { projectId: 'p-jsm2', projectKey: 'HELP2', projectName: 'Help Center', reason: 'PHASE_2_DEFERRED' },
+      ],
+    });
+    seedManifest(db, manifest);
+
+    handleGetInventory(makeReq({ connectionId: TEST_CONN_ID }), makeRes().res);
+
+    const logCalls = logSpy.mock.calls.map((args) => String(args[0]));
+    const jsmLogs = logCalls.filter((s) => s.includes('jsm_excluded'));
+    expect(jsmLogs).toHaveLength(2);
+    expect(jsmLogs.some((s) => s.includes('projectKey=DESK') && s.includes('reason=service_desk'))).toBe(true);
+    expect(jsmLogs.some((s) => s.includes('projectKey=HELP2') && s.includes('reason=service_desk'))).toBe(true);
+  });
+
+  it('emits no per-project log line when there are no JSM-deferred projects', () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const manifest = makeManifest({ jsmDeferredProjects: [] });
+    seedManifest(db, manifest);
+
+    handleGetInventory(makeReq({ connectionId: TEST_CONN_ID }), makeRes().res);
+
+    const logCalls = logSpy.mock.calls.map((args) => String(args[0]));
+    const jsmLogs = logCalls.filter((s) => s.includes('jsm_excluded'));
+    expect(jsmLogs).toHaveLength(0);
+  });
+});
+
+// ===========================================================================
+// Filter facets — GET /api/inventory/Issue
+// ===========================================================================
+
+const FACET_CONN_ID = 'facet-conn-001';
+const FACET_CLOUD_ID = 'cloud-facet-001';
+const FACET_BP_ID = 'bp-facet-001';
+const FACET_CAPTURED_AT = '2026-05-04T10:00:00.000Z';
+
+interface FacetItemSeed {
+  itemId: string;
+  summary?: string;
+  status?: string;
+  issueType?: string;
+  assignee?: string;
+  priority?: string;
+  updatedAt?: string;
+  sprintId?: string;
+  boardId?: string;
+  labels?: string[];
+  changeBadge?: string;
+}
+
+function seedFacetConnection(db: Database.Database): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO connections (connectionId, cloudId, siteName, status, createdAt, updatedAt)
+     VALUES (?, ?, ?, 'active', ?, ?)`
+  ).run(FACET_CONN_ID, FACET_CLOUD_ID, 'Facet Test Site', now, now);
+}
+
+function seedFacetManifest(db: Database.Database, jsmProjectKeys: string[] = []): void {
+  const jsmDeferredProjects = jsmProjectKeys.map((k, i) => ({
+    projectId: `jsm-proj-${i}`,
+    projectKey: k,
+    projectName: `JSM ${k}`,
+    reason: 'PHASE_2_DEFERRED',
+  }));
+  const manifest = {
+    manifestId: FACET_BP_ID,
+    cloudId: FACET_CLOUD_ID,
+    discoveredAt: FACET_CAPTURED_AT,
+    projectScope: 'all',
+    selectedProjectKeys: [],
+    projects: [],
+    jsmDeferredProjects,
+    fieldContexts: null,
+    customFieldsCaptured: null,
+    customFieldsSkipped: [],
+    coverageInvariant: null,
+    diffSummary: null,
+  };
+  db.prepare(
+    `INSERT INTO backup_manifests (id, connectionId, cloudId, createdAt, manifestJson)
+     VALUES (?, ?, ?, ?, ?)`
+  ).run(FACET_BP_ID, FACET_CONN_ID, FACET_CLOUD_ID, FACET_CAPTURED_AT, JSON.stringify(manifest));
+}
+
+function seedFacetItem(db: Database.Database, item: FacetItemSeed): void {
+  db.prepare(
+    `INSERT INTO backup_point_items
+       (connectionId, backupPointId, objectType, itemId, displayName, summary,
+        changeBadge, capturedAt, status, issueType, assignee, priority, updatedAt,
+        sprintId, boardId, labels)
+     VALUES (?, ?, 'Issue', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    FACET_CONN_ID,
+    FACET_BP_ID,
+    item.itemId,
+    item.itemId,
+    item.summary ?? null,
+    item.changeBadge ?? 'unchanged',
+    FACET_CAPTURED_AT,
+    item.status ?? null,
+    item.issueType ?? null,
+    item.assignee ?? null,
+    item.priority ?? null,
+    item.updatedAt ?? null,
+    item.sprintId ?? null,
+    item.boardId ?? null,
+    item.labels ? JSON.stringify(item.labels) : null,
+  );
+}
+
+function makeFacetReq(query: Record<string, string | string[]>): Request {
+  return { params: { type: 'Issue' }, query } as unknown as Request;
+}
+
+// ---------------------------------------------------------------------------
+// Happy-path — single facet match
+// ---------------------------------------------------------------------------
+
+describe('GET /api/inventory/Issue — filter facets (happy path, single facet)', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+    _setDbForTesting(db);
+    seedFacetConnection(db);
+    seedFacetManifest(db);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    _resetDb();
+  });
+
+  it('filters by status — returns only matching issues', () => {
+    seedFacetItem(db, { itemId: 'PROJ-1', status: 'In Progress' });
+    seedFacetItem(db, { itemId: 'PROJ-2', status: 'Done' });
+    seedFacetItem(db, { itemId: 'PROJ-3', status: 'In Progress' });
+
+    const mock = makeRes();
+    handleGetInventoryByType(makeFacetReq({ connectionId: FACET_CONN_ID, backupPointId: FACET_BP_ID, status: 'In Progress' }), mock.res);
+
+    expect(mock.statusCode()).toBe(200);
+    const body = mock.jsonBody() as { items: Array<Record<string, unknown>>; pagination: { total: number } };
+    expect(body.pagination.total).toBe(2);
+    expect(body.items.map((i) => i['id'])).toEqual(expect.arrayContaining(['PROJ-1', 'PROJ-3']));
+  });
+
+  it('filters by issueType — returns only matching issues', () => {
+    seedFacetItem(db, { itemId: 'PROJ-1', issueType: 'Bug' });
+    seedFacetItem(db, { itemId: 'PROJ-2', issueType: 'Story' });
+    seedFacetItem(db, { itemId: 'PROJ-3', issueType: 'Bug' });
+
+    const mock = makeRes();
+    handleGetInventoryByType(makeFacetReq({ connectionId: FACET_CONN_ID, backupPointId: FACET_BP_ID, issueType: 'Bug' }), mock.res);
+
+    const body = mock.jsonBody() as { pagination: { total: number } };
+    expect(body.pagination.total).toBe(2);
+  });
+
+  it('filters by assignee', () => {
+    seedFacetItem(db, { itemId: 'PROJ-1', assignee: 'alice' });
+    seedFacetItem(db, { itemId: 'PROJ-2', assignee: 'bob' });
+
+    const mock = makeRes();
+    handleGetInventoryByType(makeFacetReq({ connectionId: FACET_CONN_ID, backupPointId: FACET_BP_ID, assignee: 'alice' }), mock.res);
+
+    const body = mock.jsonBody() as { items: Array<Record<string, unknown>>; pagination: { total: number } };
+    expect(body.pagination.total).toBe(1);
+    expect(body.items[0]['id']).toBe('PROJ-1');
+  });
+
+  it('filters by priority', () => {
+    seedFacetItem(db, { itemId: 'PROJ-1', priority: 'High' });
+    seedFacetItem(db, { itemId: 'PROJ-2', priority: 'Low' });
+    seedFacetItem(db, { itemId: 'PROJ-3', priority: 'High' });
+
+    const mock = makeRes();
+    handleGetInventoryByType(makeFacetReq({ connectionId: FACET_CONN_ID, backupPointId: FACET_BP_ID, priority: 'High' }), mock.res);
+
+    const body = mock.jsonBody() as { pagination: { total: number } };
+    expect(body.pagination.total).toBe(2);
+  });
+
+  it('filters by sprint', () => {
+    seedFacetItem(db, { itemId: 'PROJ-1', sprintId: 'sprint-123' });
+    seedFacetItem(db, { itemId: 'PROJ-2', sprintId: 'sprint-999' });
+
+    const mock = makeRes();
+    handleGetInventoryByType(makeFacetReq({ connectionId: FACET_CONN_ID, backupPointId: FACET_BP_ID, sprint: 'sprint-123' }), mock.res);
+
+    const body = mock.jsonBody() as { pagination: { total: number } };
+    expect(body.pagination.total).toBe(1);
+  });
+
+  it('filters by board', () => {
+    seedFacetItem(db, { itemId: 'PROJ-1', boardId: 'board-42' });
+    seedFacetItem(db, { itemId: 'PROJ-2', boardId: 'board-99' });
+
+    const mock = makeRes();
+    handleGetInventoryByType(makeFacetReq({ connectionId: FACET_CONN_ID, backupPointId: FACET_BP_ID, board: 'board-42' }), mock.res);
+
+    const body = mock.jsonBody() as { pagination: { total: number } };
+    expect(body.pagination.total).toBe(1);
+  });
+
+  it('filters by label — matches issues whose labels array contains the value', () => {
+    seedFacetItem(db, { itemId: 'PROJ-1', labels: ['bug', 'frontend'] });
+    seedFacetItem(db, { itemId: 'PROJ-2', labels: ['backend'] });
+    seedFacetItem(db, { itemId: 'PROJ-3', labels: ['bug', 'backend'] });
+
+    const mock = makeRes();
+    handleGetInventoryByType(makeFacetReq({ connectionId: FACET_CONN_ID, backupPointId: FACET_BP_ID, label: 'bug' }), mock.res);
+
+    const body = mock.jsonBody() as { items: Array<Record<string, unknown>>; pagination: { total: number } };
+    expect(body.pagination.total).toBe(2);
+    const ids = body.items.map((i) => i['id'] as string);
+    expect(ids).toContain('PROJ-1');
+    expect(ids).toContain('PROJ-3');
+  });
+
+  it('filters by updatedFrom — only issues updated on or after the date', () => {
+    seedFacetItem(db, { itemId: 'PROJ-1', updatedAt: '2026-05-01T00:00:00.000Z' });
+    seedFacetItem(db, { itemId: 'PROJ-2', updatedAt: '2026-05-03T00:00:00.000Z' });
+    seedFacetItem(db, { itemId: 'PROJ-3', updatedAt: '2026-05-05T00:00:00.000Z' });
+
+    const mock = makeRes();
+    handleGetInventoryByType(makeFacetReq({ connectionId: FACET_CONN_ID, backupPointId: FACET_BP_ID, updatedFrom: '2026-05-03' }), mock.res);
+
+    const body = mock.jsonBody() as { pagination: { total: number } };
+    expect(body.pagination.total).toBe(2);
+  });
+
+  it('filters by updatedTo — only issues updated on or before the datetime', () => {
+    seedFacetItem(db, { itemId: 'PROJ-1', updatedAt: '2026-05-01T00:00:00.000Z' });
+    seedFacetItem(db, { itemId: 'PROJ-2', updatedAt: '2026-05-03T00:00:00.000Z' });
+    seedFacetItem(db, { itemId: 'PROJ-3', updatedAt: '2026-05-05T00:00:00.000Z' });
+
+    const mock = makeRes();
+    // Use end-of-day datetime so that May 3 items are included; a date-only value
+    // is lexicographically less than a full ISO datetime on the same day.
+    handleGetInventoryByType(makeFacetReq({ connectionId: FACET_CONN_ID, backupPointId: FACET_BP_ID, updatedTo: '2026-05-03T23:59:59.999Z' }), mock.res);
+
+    const body = mock.jsonBody() as { pagination: { total: number } };
+    expect(body.pagination.total).toBe(2);
+  });
+
+  it('OR within same facet — multiple status values return union', () => {
+    seedFacetItem(db, { itemId: 'PROJ-1', status: 'In Progress' });
+    seedFacetItem(db, { itemId: 'PROJ-2', status: 'Done' });
+    seedFacetItem(db, { itemId: 'PROJ-3', status: 'To Do' });
+
+    const mock = makeRes();
+    handleGetInventoryByType(
+      makeFacetReq({ connectionId: FACET_CONN_ID, backupPointId: FACET_BP_ID, status: ['In Progress', 'Done'] }),
+      mock.res
+    );
+
+    const body = mock.jsonBody() as { pagination: { total: number } };
+    expect(body.pagination.total).toBe(2);
+  });
+
+  it('AND within label facet — issue must have all specified labels', () => {
+    // PROJ-1 has both 'bug' and 'frontend' → matches AND condition
+    seedFacetItem(db, { itemId: 'PROJ-1', labels: ['bug', 'frontend'] });
+    // PROJ-2 has only 'bug' — missing 'frontend' → no match
+    seedFacetItem(db, { itemId: 'PROJ-2', labels: ['bug'] });
+    // PROJ-3 has only 'frontend' — missing 'bug' → no match
+    seedFacetItem(db, { itemId: 'PROJ-3', labels: ['frontend'] });
+    // PROJ-4 has neither → no match
+    seedFacetItem(db, { itemId: 'PROJ-4', labels: ['backend'] });
+
+    const mock = makeRes();
+    handleGetInventoryByType(
+      makeFacetReq({ connectionId: FACET_CONN_ID, backupPointId: FACET_BP_ID, label: ['bug', 'frontend'] }),
+      mock.res
+    );
+
+    const body = mock.jsonBody() as { items: Array<Record<string, unknown>>; pagination: { total: number } };
+    expect(body.pagination.total).toBe(1);
+    expect(body.items[0]['id']).toBe('PROJ-1');
+  });
+
+  it('pagination totalCount reflects filtered result set (not full set)', () => {
+    // 5 issues: 3 In Progress, 2 Done
+    for (let i = 1; i <= 3; i++) seedFacetItem(db, { itemId: `PROJ-${i}`, status: 'In Progress' });
+    for (let i = 4; i <= 5; i++) seedFacetItem(db, { itemId: `PROJ-${i}`, status: 'Done' });
+
+    const mock = makeRes();
+    handleGetInventoryByType(
+      makeFacetReq({ connectionId: FACET_CONN_ID, backupPointId: FACET_BP_ID, status: 'In Progress', limit: '2', offset: '0' }),
+      mock.res
+    );
+
+    const body = mock.jsonBody() as { items: unknown[]; pagination: { total: number; limit: number } };
+    // total reflects the filtered count (3), not the full count (5)
+    expect(body.pagination.total).toBe(3);
+    // only 2 items returned due to limit
+    expect(body.items).toHaveLength(2);
+  });
+
+  it('issues with null label are excluded from label filter results', () => {
+    seedFacetItem(db, { itemId: 'PROJ-1', labels: ['bug'] });
+    seedFacetItem(db, { itemId: 'PROJ-2' }); // labels is NULL
+
+    const mock = makeRes();
+    handleGetInventoryByType(makeFacetReq({ connectionId: FACET_CONN_ID, backupPointId: FACET_BP_ID, label: 'bug' }), mock.res);
+
+    const body = mock.jsonBody() as { pagination: { total: number } };
+    expect(body.pagination.total).toBe(1);
+  });
+
+  it('no facet params returns all issues (unfiltered)', () => {
+    for (let i = 1; i <= 4; i++) seedFacetItem(db, { itemId: `PROJ-${i}`, status: 'In Progress' });
+
+    const mock = makeRes();
+    handleGetInventoryByType(
+      makeFacetReq({ connectionId: FACET_CONN_ID, backupPointId: FACET_BP_ID }),
+      mock.res
+    );
+
+    const body = mock.jsonBody() as { pagination: { total: number } };
+    expect(body.pagination.total).toBe(4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-facet AND test
+// ---------------------------------------------------------------------------
+
+describe('GET /api/inventory/Issue — multi-facet AND combination', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+    _setDbForTesting(db);
+    seedFacetConnection(db);
+    seedFacetManifest(db);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    _resetDb();
+  });
+
+  it('AND across facets — status AND priority narrows result set', () => {
+    // PROJ-1: In Progress + High → match
+    // PROJ-2: In Progress + Low → no match (priority fails)
+    // PROJ-3: Done + High → no match (status fails)
+    // PROJ-4: Done + Low → no match
+    seedFacetItem(db, { itemId: 'PROJ-1', status: 'In Progress', priority: 'High' });
+    seedFacetItem(db, { itemId: 'PROJ-2', status: 'In Progress', priority: 'Low' });
+    seedFacetItem(db, { itemId: 'PROJ-3', status: 'Done', priority: 'High' });
+    seedFacetItem(db, { itemId: 'PROJ-4', status: 'Done', priority: 'Low' });
+
+    const mock = makeRes();
+    handleGetInventoryByType(
+      makeFacetReq({ connectionId: FACET_CONN_ID, backupPointId: FACET_BP_ID, status: 'In Progress', priority: 'High' }),
+      mock.res
+    );
+
+    expect(mock.statusCode()).toBe(200);
+    const body = mock.jsonBody() as { items: Array<Record<string, unknown>>; pagination: { total: number } };
+    expect(body.pagination.total).toBe(1);
+    expect(body.items[0]['id']).toBe('PROJ-1');
+  });
+
+  it('AND across three facets — status AND issueType AND assignee', () => {
+    seedFacetItem(db, { itemId: 'PROJ-1', status: 'In Progress', issueType: 'Bug', assignee: 'alice' });
+    seedFacetItem(db, { itemId: 'PROJ-2', status: 'In Progress', issueType: 'Bug', assignee: 'bob' });
+    seedFacetItem(db, { itemId: 'PROJ-3', status: 'Done', issueType: 'Bug', assignee: 'alice' });
+    seedFacetItem(db, { itemId: 'PROJ-4', status: 'In Progress', issueType: 'Story', assignee: 'alice' });
+
+    const mock = makeRes();
+    handleGetInventoryByType(
+      makeFacetReq({
+        connectionId: FACET_CONN_ID,
+        backupPointId: FACET_BP_ID,
+        status: 'In Progress',
+        issueType: 'Bug',
+        assignee: 'alice',
+      }),
+      mock.res
+    );
+
+    const body = mock.jsonBody() as { pagination: { total: number } };
+    expect(body.pagination.total).toBe(1);
+  });
+
+  it('AND within label combined with status — issue must have all labels and match status', () => {
+    // PROJ-1: In Progress + both labels → matches both conditions
+    seedFacetItem(db, { itemId: 'PROJ-1', status: 'In Progress', labels: ['bug', 'frontend'] });
+    // PROJ-2: In Progress + only 'bug' → label condition fails (missing 'frontend')
+    seedFacetItem(db, { itemId: 'PROJ-2', status: 'In Progress', labels: ['bug'] });
+    // PROJ-3: Done + both labels → status condition fails
+    seedFacetItem(db, { itemId: 'PROJ-3', status: 'Done', labels: ['bug', 'frontend'] });
+    // PROJ-4: In Progress + unrelated labels → label condition fails
+    seedFacetItem(db, { itemId: 'PROJ-4', status: 'In Progress', labels: ['backend'] });
+
+    const mock = makeRes();
+    handleGetInventoryByType(
+      makeFacetReq({
+        connectionId: FACET_CONN_ID,
+        backupPointId: FACET_BP_ID,
+        status: 'In Progress',
+        label: ['bug', 'frontend'],
+      }),
+      mock.res
+    );
+
+    const body = mock.jsonBody() as { items: Array<Record<string, unknown>>; pagination: { total: number } };
+    expect(body.pagination.total).toBe(1);
+    expect(body.items[0]['id']).toBe('PROJ-1');
+  });
+
+  it('date-range AND status narrows results', () => {
+    seedFacetItem(db, { itemId: 'PROJ-1', status: 'In Progress', updatedAt: '2026-05-01T00:00:00.000Z' });
+    seedFacetItem(db, { itemId: 'PROJ-2', status: 'In Progress', updatedAt: '2026-05-04T00:00:00.000Z' });
+    seedFacetItem(db, { itemId: 'PROJ-3', status: 'Done', updatedAt: '2026-05-04T00:00:00.000Z' }); // status fails
+
+    const mock = makeRes();
+    handleGetInventoryByType(
+      makeFacetReq({
+        connectionId: FACET_CONN_ID,
+        backupPointId: FACET_BP_ID,
+        status: 'In Progress',
+        updatedFrom: '2026-05-03',
+      }),
+      mock.res
+    );
+
+    const body = mock.jsonBody() as { pagination: { total: number } };
+    expect(body.pagination.total).toBe(1);
+  });
+
+  it('pagination totalCount reflects multi-facet filtered set', () => {
+    for (let i = 1; i <= 5; i++) {
+      seedFacetItem(db, { itemId: `PROJ-${i}`, status: 'In Progress', priority: 'High' });
+    }
+    for (let i = 6; i <= 10; i++) {
+      seedFacetItem(db, { itemId: `PROJ-${i}`, status: 'Done', priority: 'High' });
+    }
+
+    const mock = makeRes();
+    handleGetInventoryByType(
+      makeFacetReq({
+        connectionId: FACET_CONN_ID,
+        backupPointId: FACET_BP_ID,
+        status: 'In Progress',
+        priority: 'High',
+        limit: '2',
+      }),
+      mock.res
+    );
+
+    const body = mock.jsonBody() as { items: unknown[]; pagination: { total: number } };
+    expect(body.pagination.total).toBe(5); // filtered total, not 10
+    expect(body.items).toHaveLength(2);    // limited page
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Error-path — invalid date format
+// ---------------------------------------------------------------------------
+
+describe('GET /api/inventory/Issue — filter facets error paths', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+    _setDbForTesting(db);
+    seedFacetConnection(db);
+    seedFacetManifest(db);
+  });
+
+  afterEach(() => {
+    _resetDb();
+  });
+
+  it('returns 400 with error.code=invalid_date_format for non-ISO updatedFrom', () => {
+    const mock = makeRes();
+    handleGetInventoryByType(
+      makeFacetReq({ connectionId: FACET_CONN_ID, backupPointId: FACET_BP_ID, updatedFrom: '05/01/2026' }),
+      mock.res
+    );
+
+    expect(mock.statusCode()).toBe(400);
+    const body = mock.jsonBody() as Record<string, unknown>;
+    expect(body['error']).toBe('invalid_date_format');
+    expect(typeof body['message']).toBe('string');
+  });
+
+  it('returns 400 with error.code=invalid_date_format for non-ISO updatedTo', () => {
+    const mock = makeRes();
+    handleGetInventoryByType(
+      makeFacetReq({ connectionId: FACET_CONN_ID, backupPointId: FACET_BP_ID, updatedTo: 'not-a-date' }),
+      mock.res
+    );
+
+    expect(mock.statusCode()).toBe(400);
+    const body = mock.jsonBody() as Record<string, unknown>;
+    expect(body['error']).toBe('invalid_date_format');
+  });
+
+  it('returns 400 for garbage string in updatedFrom', () => {
+    const mock = makeRes();
+    handleGetInventoryByType(
+      makeFacetReq({ connectionId: FACET_CONN_ID, backupPointId: FACET_BP_ID, updatedFrom: 'yesterday' }),
+      mock.res
+    );
+
+    expect(mock.statusCode()).toBe(400);
+    expect((mock.jsonBody() as Record<string, unknown>)['error']).toBe('invalid_date_format');
+  });
+
+  it('accepts valid ISO-8601 date-only string without error', () => {
+    const mock = makeRes();
+    handleGetInventoryByType(
+      makeFacetReq({ connectionId: FACET_CONN_ID, backupPointId: FACET_BP_ID, updatedFrom: '2026-05-01' }),
+      mock.res
+    );
+
+    expect(mock.statusCode()).toBe(200);
+  });
+
+  it('accepts valid ISO-8601 datetime string without error', () => {
+    const mock = makeRes();
+    handleGetInventoryByType(
+      makeFacetReq({ connectionId: FACET_CONN_ID, backupPointId: FACET_BP_ID, updatedTo: '2026-05-31T23:59:59.000Z' }),
+      mock.res
+    );
+
+    expect(mock.statusCode()).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// JSM exclusion preserved under filter combinations
+// ---------------------------------------------------------------------------
+
+describe('GET /api/inventory/Issue — JSM exclusion preserved under facet filters', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+    _setDbForTesting(db);
+    seedFacetConnection(db);
+    seedFacetManifest(db, ['JSMP']); // JSMP is JSM-deferred
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    _resetDb();
+  });
+
+  it('JSM issues are excluded even when a facet filter would otherwise match them', () => {
+    // Software issue — matches status filter
+    db.prepare(
+      `INSERT INTO backup_point_items
+         (connectionId, backupPointId, objectType, itemId, displayName, summary,
+          changeBadge, capturedAt, status)
+       VALUES (?, ?, 'Issue', 'SWPROJ-1', 'SWPROJ-1', 'SW issue', 'unchanged', ?, 'In Progress')`
+    ).run(FACET_CONN_ID, FACET_BP_ID, FACET_CAPTURED_AT);
+
+    // JSM issue — also matches status filter but must be excluded
+    db.prepare(
+      `INSERT INTO backup_point_items
+         (connectionId, backupPointId, objectType, itemId, displayName, summary,
+          changeBadge, capturedAt, status)
+       VALUES (?, ?, 'Issue', 'JSMP-1', 'JSMP-1', 'JSM issue', 'unchanged', ?, 'In Progress')`
+    ).run(FACET_CONN_ID, FACET_BP_ID, FACET_CAPTURED_AT);
+
+    const mock = makeRes();
+    handleGetInventoryByType(
+      makeFacetReq({ connectionId: FACET_CONN_ID, backupPointId: FACET_BP_ID, status: 'In Progress' }),
+      mock.res
+    );
+
+    expect(mock.statusCode()).toBe(200);
+    const body = mock.jsonBody() as { items: Array<Record<string, unknown>>; pagination: { total: number } };
+    expect(body.pagination.total).toBe(1);
+    expect(body.items[0]['id']).toBe('SWPROJ-1');
+    const ids = body.items.map((i) => i['id'] as string);
+    expect(ids).not.toContain('JSMP-1');
+  });
+
+  it('JSM exclusion is preserved under multi-facet AND filter', () => {
+    db.prepare(
+      `INSERT INTO backup_point_items
+         (connectionId, backupPointId, objectType, itemId, displayName, summary,
+          changeBadge, capturedAt, status, priority)
+       VALUES (?, ?, 'Issue', 'SWPROJ-1', 'SWPROJ-1', 'SW issue', 'unchanged', ?, 'In Progress', 'High')`
+    ).run(FACET_CONN_ID, FACET_BP_ID, FACET_CAPTURED_AT);
+
+    db.prepare(
+      `INSERT INTO backup_point_items
+         (connectionId, backupPointId, objectType, itemId, displayName, summary,
+          changeBadge, capturedAt, status, priority)
+       VALUES (?, ?, 'Issue', 'JSMP-2', 'JSMP-2', 'JSM issue', 'unchanged', ?, 'In Progress', 'High')`
+    ).run(FACET_CONN_ID, FACET_BP_ID, FACET_CAPTURED_AT);
+
+    const mock = makeRes();
+    handleGetInventoryByType(
+      makeFacetReq({
+        connectionId: FACET_CONN_ID,
+        backupPointId: FACET_BP_ID,
+        status: 'In Progress',
+        priority: 'High',
+      }),
+      mock.res
+    );
+
+    const body = mock.jsonBody() as { pagination: { total: number } };
+    expect(body.pagination.total).toBe(1);
+  });
+
+  it('JSM exclusion works when no facet filters are applied', () => {
+    db.prepare(
+      `INSERT INTO backup_point_items
+         (connectionId, backupPointId, objectType, itemId, displayName, changeBadge, capturedAt)
+       VALUES (?, ?, 'Issue', 'SWPROJ-1', 'SWPROJ-1', 'unchanged', ?)`
+    ).run(FACET_CONN_ID, FACET_BP_ID, FACET_CAPTURED_AT);
+
+    db.prepare(
+      `INSERT INTO backup_point_items
+         (connectionId, backupPointId, objectType, itemId, displayName, changeBadge, capturedAt)
+       VALUES (?, ?, 'Issue', 'JSMP-3', 'JSMP-3', 'unchanged', ?)`
+    ).run(FACET_CONN_ID, FACET_BP_ID, FACET_CAPTURED_AT);
+
+    const mock = makeRes();
+    handleGetInventoryByType(
+      makeFacetReq({ connectionId: FACET_CONN_ID, backupPointId: FACET_BP_ID }),
+      mock.res
+    );
+
+    const body = mock.jsonBody() as { pagination: { total: number } };
+    expect(body.pagination.total).toBe(1);
+  });
+});
+
+// ===========================================================================
+// Search query (q) — Issue key exact-match and summary tokenized search
+// ===========================================================================
+
+const SEARCH_CONN_ID = 'search-conn-001';
+const SEARCH_CLOUD_ID = 'cloud-search-001';
+const SEARCH_BP_ID = 'bp-search-001';
+const SEARCH_CAPTURED_AT = '2026-05-04T10:00:00.000Z';
+
+function seedSearchConnection(db: Database.Database): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO connections (connectionId, cloudId, siteName, status, createdAt, updatedAt)
+     VALUES (?, ?, ?, 'active', ?, ?)`
+  ).run(SEARCH_CONN_ID, SEARCH_CLOUD_ID, 'Search Test Site', now, now);
+}
+
+function seedSearchManifest(db: Database.Database): void {
+  db.prepare(
+    `INSERT INTO backup_manifests (id, connectionId, cloudId, createdAt, manifestJson)
+     VALUES (?, ?, ?, ?, ?)`
+  ).run(SEARCH_BP_ID, SEARCH_CONN_ID, SEARCH_CLOUD_ID, SEARCH_CAPTURED_AT, '{}');
+}
+
+function seedSearchIssue(db: Database.Database, itemId: string, summary: string): void {
+  db.prepare(
+    `INSERT INTO backup_point_items
+       (connectionId, backupPointId, objectType, itemId, displayName, summary, changeBadge, capturedAt)
+     VALUES (?, ?, 'Issue', ?, ?, ?, 'unchanged', ?)`
+  ).run(SEARCH_CONN_ID, SEARCH_BP_ID, itemId, itemId, summary, SEARCH_CAPTURED_AT);
+}
+
+function makeSearchReq(q: string | undefined, extra: Record<string, string> = {}): Request {
+  const query: Record<string, string> = {
+    connectionId: SEARCH_CONN_ID,
+    backupPointId: SEARCH_BP_ID,
+    ...extra,
+  };
+  if (q !== undefined) query['q'] = q;
+  return { params: { type: 'Issue' }, query } as unknown as Request;
+}
+
+describe('GET /api/inventory/Issue — search query (q)', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+    _setDbForTesting(db);
+    seedSearchConnection(db);
+    seedSearchManifest(db);
+  });
+
+  afterEach(() => {
+    _resetDb();
+  });
+
+  it('issue key exact-match returns exactly 1 result', () => {
+    seedSearchIssue(db, 'PROJ-1', 'Fix the login bug');
+    seedSearchIssue(db, 'PROJ-2', 'Add retry logic');
+
+    const mock = makeRes();
+    handleGetInventoryByType(makeSearchReq('PROJ-1'), mock.res);
+
+    expect(mock.statusCode()).toBe(200);
+    const body = mock.jsonBody() as { items: Array<Record<string, unknown>>; pagination: { total: number } };
+    expect(body.pagination.total).toBe(1);
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]['id']).toBe('PROJ-1');
+  });
+
+  it('issue key exact-match returns 0 results when the key does not exist', () => {
+    seedSearchIssue(db, 'PROJ-1', 'Fix the login bug');
+
+    const mock = makeRes();
+    handleGetInventoryByType(makeSearchReq('PROJ-99'), mock.res);
+
+    expect(mock.statusCode()).toBe(200);
+    const body = mock.jsonBody() as { pagination: { total: number } };
+    expect(body.pagination.total).toBe(0);
+  });
+
+  it('single-token case-insensitive summary search returns matching issues', () => {
+    seedSearchIssue(db, 'PROJ-1', 'Fix the Login bug');
+    seedSearchIssue(db, 'PROJ-2', 'Add retry logic');
+    seedSearchIssue(db, 'PROJ-3', 'LOGIN page error');
+
+    const mock = makeRes();
+    handleGetInventoryByType(makeSearchReq('login'), mock.res);
+
+    const body = mock.jsonBody() as { items: Array<Record<string, unknown>>; pagination: { total: number } };
+    expect(body.pagination.total).toBe(2);
+    const ids = body.items.map((i) => i['id'] as string);
+    expect(ids).toContain('PROJ-1');
+    expect(ids).toContain('PROJ-3');
+    expect(ids).not.toContain('PROJ-2');
+  });
+
+  it('multi-token summary search applies AND across tokens', () => {
+    seedSearchIssue(db, 'PROJ-1', 'Fix the login bug');     // has both "login" and "bug" → match
+    seedSearchIssue(db, 'PROJ-2', 'Login page refactor');   // has "login" but not "bug" → no match
+    seedSearchIssue(db, 'PROJ-3', 'Null pointer bug');      // has "bug" but not "login" → no match
+
+    const mock = makeRes();
+    handleGetInventoryByType(makeSearchReq('login bug'), mock.res);
+
+    const body = mock.jsonBody() as { items: Array<Record<string, unknown>>; pagination: { total: number } };
+    expect(body.pagination.total).toBe(1);
+    expect(body.items[0]['id']).toBe('PROJ-1');
+  });
+
+  it('does NOT match a token present only in ADF description body (body-content search is disabled)', () => {
+    // The token below would appear in the ADF description/comments but is absent from
+    // the summary column. backup_point_items stores only summary, not ADF body content,
+    // so searching this token must return zero results — proving body-content search
+    // is disabled by design.
+    seedSearchIssue(db, 'PROJ-1', 'Fix the login bug');
+
+    const mock = makeRes();
+    handleGetInventoryByType(makeSearchReq('ZX9_DESCRIPTION_ONLY_TOKEN'), mock.res);
+
+    const body = mock.jsonBody() as { pagination: { total: number } };
+    expect(body.pagination.total).toBe(0);
+  });
+
+  it('empty q string returns the unfiltered list with 200', () => {
+    seedSearchIssue(db, 'PROJ-1', 'Fix the login bug');
+    seedSearchIssue(db, 'PROJ-2', 'Add retry logic');
+    seedSearchIssue(db, 'PROJ-3', 'Update dependencies');
+
+    const mock = makeRes();
+    handleGetInventoryByType(makeSearchReq(''), mock.res);
+
+    expect(mock.statusCode()).toBe(200);
+    const body = mock.jsonBody() as { pagination: { total: number } };
+    expect(body.pagination.total).toBe(3);
+  });
+
+  it('absent q returns the unfiltered list with 200', () => {
+    seedSearchIssue(db, 'PROJ-1', 'Fix the login bug');
+    seedSearchIssue(db, 'PROJ-2', 'Add retry logic');
+
+    const mock = makeRes();
+    handleGetInventoryByType(makeSearchReq(undefined), mock.res);
+
+    expect(mock.statusCode()).toBe(200);
+    const body = mock.jsonBody() as { pagination: { total: number } };
+    expect(body.pagination.total).toBe(2);
+  });
+
+  it('summary search combined with status facet returns only the intersection', () => {
+    db.prepare(
+      `INSERT INTO backup_point_items
+         (connectionId, backupPointId, objectType, itemId, displayName, summary,
+          changeBadge, capturedAt, status)
+       VALUES (?, ?, 'Issue', 'PROJ-1', 'PROJ-1', 'Fix the login bug', 'unchanged', ?, 'In Progress')`
+    ).run(SEARCH_CONN_ID, SEARCH_BP_ID, SEARCH_CAPTURED_AT);
+
+    db.prepare(
+      `INSERT INTO backup_point_items
+         (connectionId, backupPointId, objectType, itemId, displayName, summary,
+          changeBadge, capturedAt, status)
+       VALUES (?, ?, 'Issue', 'PROJ-2', 'PROJ-2', 'Login page refactor', 'unchanged', ?, 'Done')`
+    ).run(SEARCH_CONN_ID, SEARCH_BP_ID, SEARCH_CAPTURED_AT);
+
+    db.prepare(
+      `INSERT INTO backup_point_items
+         (connectionId, backupPointId, objectType, itemId, displayName, summary,
+          changeBadge, capturedAt, status)
+       VALUES (?, ?, 'Issue', 'PROJ-3', 'PROJ-3', 'Add retry logic', 'unchanged', ?, 'In Progress')`
+    ).run(SEARCH_CONN_ID, SEARCH_BP_ID, SEARCH_CAPTURED_AT);
+
+    const mock = makeRes();
+    handleGetInventoryByType(
+      {
+        params: { type: 'Issue' },
+        query: {
+          connectionId: SEARCH_CONN_ID,
+          backupPointId: SEARCH_BP_ID,
+          q: 'login',
+          status: 'In Progress',
+        },
+      } as unknown as Request,
+      mock.res
+    );
+
+    const body = mock.jsonBody() as { items: Array<Record<string, unknown>>; pagination: { total: number } };
+    expect(body.pagination.total).toBe(1);
+    expect(body.items[0]['id']).toBe('PROJ-1');
+  });
+
+  it('q does not apply to non-Issue types (Project listing ignores q)', () => {
+    db.prepare(
+      `INSERT INTO backup_point_items
+         (connectionId, backupPointId, objectType, itemId, displayName, changeBadge, capturedAt)
+       VALUES (?, ?, 'Project', 'proj-abc', 'ABC', 'unchanged', ?)`
+    ).run(SEARCH_CONN_ID, SEARCH_BP_ID, SEARCH_CAPTURED_AT);
+
+    const mock = makeRes();
+    handleGetInventoryByType(
+      {
+        params: { type: 'Project' },
+        query: { connectionId: SEARCH_CONN_ID, backupPointId: SEARCH_BP_ID, q: 'nomatch' },
+      } as unknown as Request,
+      mock.res
+    );
+
+    // q is ignored for Project type — all project items are returned
+    expect(mock.statusCode()).toBe(200);
+    const body = mock.jsonBody() as { pagination: { total: number } };
+    expect(body.pagination.total).toBe(1);
+  });
+});
+
+// ===========================================================================
+// Attachment filename search — GET /api/inventory/Issue
+// ===========================================================================
+
+const ATTACH_CONN_ID = 'attach-conn-001';
+const ATTACH_CLOUD_ID = 'cloud-attach-001';
+const ATTACH_BP_ID = 'bp-attach-001';
+const ATTACH_CAPTURED_AT = '2026-05-04T10:00:00.000Z';
+
+function createTestDbWithAttachments(): Database.Database {
+  const db = new Database(':memory:');
+  db.pragma('foreign_keys = ON');
+  db.exec(`
+    CREATE TABLE connections (
+      connectionId TEXT PRIMARY KEY,
+      cloudId      TEXT NOT NULL UNIQUE,
+      siteName     TEXT NOT NULL,
+      status       TEXT NOT NULL DEFAULT 'active',
+      createdAt    TEXT NOT NULL,
+      updatedAt    TEXT NOT NULL
+    );
+    CREATE TABLE backup_manifests (
+      id           TEXT    PRIMARY KEY,
+      connectionId TEXT    NOT NULL REFERENCES connections(connectionId) ON DELETE CASCADE,
+      cloudId      TEXT    NOT NULL,
+      createdAt    TEXT    NOT NULL,
+      manifestJson TEXT    NOT NULL
+    );
+    CREATE TABLE backup_point_items (
+      rowId         INTEGER PRIMARY KEY AUTOINCREMENT,
+      connectionId  TEXT    NOT NULL,
+      backupPointId TEXT    NOT NULL,
+      objectType    TEXT    NOT NULL CHECK (objectType IN ('Issue', 'Project', 'Board', 'Sprint')),
+      itemId        TEXT    NOT NULL,
+      displayName   TEXT    NOT NULL,
+      summary       TEXT,
+      changeBadge   TEXT    NOT NULL DEFAULT 'unchanged' CHECK (changeBadge IN ('added', 'modified', 'deleted', 'unchanged')),
+      capturedAt    TEXT    NOT NULL,
+      status        TEXT,
+      issueType     TEXT,
+      assignee      TEXT,
+      priority      TEXT,
+      updatedAt     TEXT,
+      sprintId      TEXT,
+      boardId       TEXT,
+      labels        TEXT,
+      attachments   TEXT,
+      FOREIGN KEY (connectionId) REFERENCES connections(connectionId) ON DELETE CASCADE,
+      FOREIGN KEY (backupPointId) REFERENCES backup_manifests(id) ON DELETE CASCADE
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_bpi_unique
+      ON backup_point_items(backupPointId, objectType, itemId);
+    CREATE INDEX IF NOT EXISTS idx_bpi_lookup
+      ON backup_point_items(connectionId, backupPointId, objectType);
+  `);
+  return db;
+}
+
+function seedAttachConnection(db: Database.Database): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO connections (connectionId, cloudId, siteName, status, createdAt, updatedAt)
+     VALUES (?, ?, ?, 'active', ?, ?)`
+  ).run(ATTACH_CONN_ID, ATTACH_CLOUD_ID, 'Attach Test Site', now, now);
+}
+
+function seedAttachManifest(db: Database.Database): void {
+  db.prepare(
+    `INSERT INTO backup_manifests (id, connectionId, cloudId, createdAt, manifestJson)
+     VALUES (?, ?, ?, ?, ?)`
+  ).run(ATTACH_BP_ID, ATTACH_CONN_ID, ATTACH_CLOUD_ID, ATTACH_CAPTURED_AT, '{}');
+}
+
+function seedAttachIssue(db: Database.Database, itemId: string, attachments: string[] | null): void {
+  db.prepare(
+    `INSERT INTO backup_point_items
+       (connectionId, backupPointId, objectType, itemId, displayName, summary, changeBadge, capturedAt, attachments)
+     VALUES (?, ?, 'Issue', ?, ?, ?, 'unchanged', ?, ?)`
+  ).run(
+    ATTACH_CONN_ID,
+    ATTACH_BP_ID,
+    itemId,
+    itemId,
+    `Summary for ${itemId}`,
+    ATTACH_CAPTURED_AT,
+    attachments ? JSON.stringify(attachments) : null,
+  );
+}
+
+function makeAttachReq(attachmentFilename: string | undefined, extra: Record<string, string> = {}): Request {
+  const query: Record<string, string> = {
+    connectionId: ATTACH_CONN_ID,
+    backupPointId: ATTACH_BP_ID,
+    ...extra,
+  };
+  if (attachmentFilename !== undefined) query['attachmentFilename'] = attachmentFilename;
+  return { params: { type: 'Issue' }, query } as unknown as Request;
+}
+
+describe('GET /api/inventory/Issue — attachment filename search', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDbWithAttachments();
+    _setDbForTesting(db);
+    seedAttachConnection(db);
+    seedAttachManifest(db);
+  });
+
+  afterEach(() => {
+    _resetDb();
+  });
+
+  it('happy path: single token matches issue with a matching attachment filename', () => {
+    seedAttachIssue(db, 'PROJ-1', ['report.pdf', 'screenshot.png']);
+    seedAttachIssue(db, 'PROJ-2', ['notes.txt']);
+
+    const mock = makeRes();
+    handleGetInventoryByType(makeAttachReq('report'), mock.res);
+
+    expect(mock.statusCode()).toBe(200);
+    const body = mock.jsonBody() as { items: Array<Record<string, unknown>>; pagination: { total: number } };
+    expect(body.pagination.total).toBe(1);
+    expect(body.items[0]['id']).toBe('PROJ-1');
+  });
+
+  it('partial-match: token matches as substring within filename', () => {
+    seedAttachIssue(db, 'PROJ-1', ['project_budget_2026.xlsx']);
+    seedAttachIssue(db, 'PROJ-2', ['unrelated.csv']);
+
+    const mock = makeRes();
+    // "budget" is a substring of "project_budget_2026.xlsx"
+    handleGetInventoryByType(makeAttachReq('budget'), mock.res);
+
+    expect(mock.statusCode()).toBe(200);
+    const body = mock.jsonBody() as { items: Array<Record<string, unknown>>; pagination: { total: number } };
+    expect(body.pagination.total).toBe(1);
+    expect(body.items[0]['id']).toBe('PROJ-1');
+  });
+
+  it('negative: issue with no attachments (null) does not match any filename search', () => {
+    seedAttachIssue(db, 'PROJ-1', null); // no attachments
+    seedAttachIssue(db, 'PROJ-2', ['report.pdf']);
+
+    const mock = makeRes();
+    handleGetInventoryByType(makeAttachReq('report'), mock.res);
+
+    const body = mock.jsonBody() as { items: Array<Record<string, unknown>>; pagination: { total: number } };
+    expect(body.pagination.total).toBe(1);
+    expect(body.items[0]['id']).toBe('PROJ-2');
+    const ids = body.items.map((i) => i['id'] as string);
+    expect(ids).not.toContain('PROJ-1');
+  });
+
+  it('case-insensitive: uppercase token matches lowercase filename', () => {
+    seedAttachIssue(db, 'PROJ-1', ['screenshot.png']);
+    seedAttachIssue(db, 'PROJ-2', ['notes.txt']);
+
+    const mock = makeRes();
+    handleGetInventoryByType(makeAttachReq('SCREENSHOT'), mock.res);
+
+    const body = mock.jsonBody() as { pagination: { total: number } };
+    expect(body.pagination.total).toBe(1);
+  });
+
+  it('AND across tokens: issue matches only when one attachment contains all tokens', () => {
+    // PROJ-1 has a file matching both "budget" and "2026" in the same filename
+    seedAttachIssue(db, 'PROJ-1', ['budget_report_2026.xlsx']);
+    // PROJ-2 has one file with "budget" and another with "2026" but no single file has both
+    seedAttachIssue(db, 'PROJ-2', ['budget_draft.xlsx', 'report_2026.pdf']);
+    // PROJ-3 only has "budget"
+    seedAttachIssue(db, 'PROJ-3', ['budget_only.xlsx']);
+
+    const mock = makeRes();
+    handleGetInventoryByType(makeAttachReq('budget 2026'), mock.res);
+
+    const body = mock.jsonBody() as { items: Array<Record<string, unknown>>; pagination: { total: number } };
+    expect(body.pagination.total).toBe(1);
+    expect(body.items[0]['id']).toBe('PROJ-1');
+  });
+
+  it('issue matches when any one of multiple attachments satisfies all tokens', () => {
+    // PROJ-1 has two attachments; the second one matches
+    seedAttachIssue(db, 'PROJ-1', ['unrelated.txt', 'final_report.pdf']);
+    seedAttachIssue(db, 'PROJ-2', ['other.txt']);
+
+    const mock = makeRes();
+    handleGetInventoryByType(makeAttachReq('final'), mock.res);
+
+    const body = mock.jsonBody() as { pagination: { total: number } };
+    expect(body.pagination.total).toBe(1);
+  });
+
+  it('attachmentFilename combines correctly with status facet filter (AND)', () => {
+    // PROJ-1: matching attachment + correct status → match
+    seedAttachIssue(db, 'PROJ-1', ['budget.pdf']);
+    db.prepare(
+      `UPDATE backup_point_items SET status = 'In Progress' WHERE itemId = 'PROJ-1'`
+    ).run();
+
+    // PROJ-2: matching attachment + wrong status → no match
+    seedAttachIssue(db, 'PROJ-2', ['budget_v2.pdf']);
+    db.prepare(
+      `UPDATE backup_point_items SET status = 'Done' WHERE itemId = 'PROJ-2'`
+    ).run();
+
+    // PROJ-3: non-matching attachment + correct status → no match
+    seedAttachIssue(db, 'PROJ-3', ['unrelated.txt']);
+    db.prepare(
+      `UPDATE backup_point_items SET status = 'In Progress' WHERE itemId = 'PROJ-3'`
+    ).run();
+
+    const mock = makeRes();
+    handleGetInventoryByType(
+      makeAttachReq('budget', { status: 'In Progress' }),
+      mock.res
+    );
+
+    const body = mock.jsonBody() as { items: Array<Record<string, unknown>>; pagination: { total: number } };
+    expect(body.pagination.total).toBe(1);
+    expect(body.items[0]['id']).toBe('PROJ-1');
+  });
+
+  it('empty attachmentFilename returns the full unfiltered list', () => {
+    seedAttachIssue(db, 'PROJ-1', ['report.pdf']);
+    seedAttachIssue(db, 'PROJ-2', null);
+
+    const mock = makeRes();
+    handleGetInventoryByType(makeAttachReq(''), mock.res);
+
+    expect(mock.statusCode()).toBe(200);
+    const body = mock.jsonBody() as { pagination: { total: number } };
+    expect(body.pagination.total).toBe(2);
   });
 });

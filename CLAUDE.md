@@ -361,3 +361,57 @@ This is sprint 1 of 2 for the phase. Plan a slice of the deliverables appropriat
 - ✅ QA: doc-grounding verification for Sprint 1 docs — Qa Engineer (⚡ Quick, 2 SP)
 
 ---
+### Sprint 2 — Inventory Filters, Search & Traceability | 2026-05-05 | ⏳ in progress | 31 SP est.
+**Goal:** [Phase: Protected Object Inventory & Browse Flow — Sprint 2 of 2]
+Deliver the operator-facing Inventory sidebar and Object Explorer that exercises the backup manifest produced by the snapshot phase. This is the browse-protected-inventory operator flow: sidebar with four object types defaulting to Issues, structured search and filter facets, and traceability from any item to its backup-point ID and timestamp.
+
+Deliverables (across all sprints in this phase):
+- GET /api/inventory endpoint returning objectTypes array with Project, Issue, Board, Sprint, Workflow, Custom Field entries with counts and lastBackupAt
+- Inventory sidebar UI with four Phase 1 object types (Issues default, Projects, Boards, Sprints) and per-type counts
+- Object Explorer pagination via GET /api/inventory/{type}?connectionId&backupPointId&limit&offset
+- Issue displayName rendering as <PROJECT_KEY>-<N> with changeBadge (added/modified/deleted/unchanged)
+- Structured filter facets: status, issueType, assignee, sprint, board, label, priority, date-range on updated
+- Exact-match Issue key search and tokenized case-insensitive Issue summary search
+- Tokenized partial-match attachment filename search
+- Body-content search explicitly disabled (no full-text across ADF description/comments)
+- JSM project exclusion from sidebar counts and inventory results
+- Single-click traceability from any item to backup-point ID + timestamp
+
+This is sprint 2 of 2 for the phase. Plan a slice of the deliverables appropriate for one sprint; remaining items will be picked up in subsequent sprints via the auto-extracted Carry-Forward Backlog.
+
+_Sprint started. Role checkpoints below will update as work completes._
+
+---
+### Sprint 2 — Inventory Filters, Search & Traceability | 2026-05-05 | 📋 reviewing | 34 SP
+**Goal:** [Phase: Protected Object Inventory & Browse Flow — Sprint 2 of 2]
+Deliver the operator-facing Inventory sidebar and Object Explorer that exercises the backup manifest produced by the snapshot phase. This is the browse-protected-inventory operator flow: sidebar with four object types defaulting to Issues, structured search and filter facets, and traceability from any item to its backup-point ID and timestamp.
+
+Deliverables (across all sprints in this phase):
+- GET /api/inventory endpoint returning objectTypes array with Project, Issue, Board, Sprint, Workflow, Custom Field entries with counts and lastBackupAt
+- Inventory sidebar UI with four Phase 1 object types (Issues default, Projects, Boards, Sprints) and per-type counts
+- Object Explorer pagination via GET /api/inventory/{type}?connectionId&backupPointId&limit&offset
+- Issue displayName rendering as <PROJECT_KEY>-<N> with changeBadge (added/modified/deleted/unchanged)
+- Structured filter facets: status, issueType, assignee, sprint, board, label, priority, date-range on updated
+- Exact-match Issue key search and tokenized case-insensitive Issue summary search
+- Tokenized partial-match attachment filename search
+- Body-content search explicitly disabled (no full-text across ADF description/comments)
+- JSM project exclusion from sidebar counts and inventory results
+- Single-click traceability from any item to backup-point ID + timestamp
+
+This is sprint 2 of 2 for the phase. Plan a slice of the deliverables appropriate for one sprint; remaining items will be picked up in subsequent sprints via the auto-extracted Carry-Forward Backlog.
+
+**Delivered:**
+- ✅ Specify filter facet, search, and traceability contracts in ARCHITECTURE.md — Software Architect (◈ Standard, 3 SP)
+- ✅ Implement JSM project exclusion in inventory counts and results — Backend Developer (◈ Standard, 3 SP)
+- ✅ Implement structured filter facets on GET /api/inventory/Issue — Backend Developer (◉ Deep, 5 SP)
+- ✅ Implement Issue key exact-match and summary tokenized search — Backend Developer (◈ Standard, 3 SP)
+- ✅ Implement tokenized attachment filename search — Backend Developer (⚡ Quick, 2 SP)
+- ✅ Add backup-point traceability fields to inventory item responses — Backend Developer (⚡ Quick, 2 SP)
+- ✅ Build filter facet panel and search bar in Object Explorer UI — Frontend Developer (◉ Deep, 5 SP)
+- ✅ Add single-click traceability UI from inventory item to backup-point ID + timestamp — Frontend Developer (◈ Standard, 3 SP)
+- ✅ Update DEMO.md with filter/search/traceability flow and refresh smoke probe — Frontend Developer (⚡ Quick, 2 SP)
+- ✅ Update CHANGELOG.md and INSTALL.md for new inventory query params — Devops Engineer (⚡ Quick, 1 SP)
+- ✅ QA: doc-grounding verification across all canonical docs — Qa Engineer (⚡ Quick, 2 SP)
+- ✅ Resolve P0 carry-forward: jsmExcluded field documentation discrepancy — Qa Engineer (◈ Standard, 3 SP)
+
+---

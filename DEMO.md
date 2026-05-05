@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - API server running on `http://localhost:3000` (see [INSTALL.md](INSTALL.md))
-- Atlassian OAuth app configured with `ATLASSIAN_CLIENT_ID`, `ATLASSIAN_CLIENT_SECRET`, and `OAUTH_REDIRECT_URI` set in `.env`
+- Atlassian OAuth app configured with `ATLASSIAN_CLIENT_ID`, `ATLASSIAN_CLIENT_SECRET`, and `OAUTH_REDIRECT_URI` set in `.env` (copy `.env.example` to `.env` and fill in values — see [INSTALL.md](INSTALL.md))
 - Caddy (or any HTTPS proxy) terminating TLS at `https://localhost` and forwarding `/api/*` to port 3000
 
 ---
@@ -389,6 +389,13 @@ to override, e.g. `DCC_ATTACHMENT_DIR=/mnt/backup-volume/attachments`.
 
 ### Read a sidecar file to verify SHA-256
 
+> **Phase 2 — not yet shipped.**  Attachment binaries and `.meta.json` sidecar
+> files are written by the snapshot engine when `POST /api/snapshot` runs.
+> That HTTP endpoint is not yet exposed (see
+> [Issue Enumeration](#issue-enumeration-capture-orchestrator) above).
+> The paths and commands below are correct and will work once the snapshot
+> HTTP surface is wired in a follow-on sprint.
+
 ```bash
 BACKUP_POINT_ID=<backupPointId>
 ISSUE_KEY=PROJ-42
@@ -414,6 +421,8 @@ Example sidecar:
 ```
 
 ### Verify the binary matches its sidecar SHA-256
+
+> **Phase 2 — not yet shipped.**  See note above; requires a completed snapshot run.
 
 ```bash
 sha256sum "data/attachments/${BACKUP_POINT_ID}/${ISSUE_KEY}/${ATTACHMENT_ID}" \
@@ -603,7 +612,94 @@ disabled when there is no further page in that direction.
 
 ---
 
-### Step 4 — Reveal backup-point traceability (single click)
+### Step 4 — Filter by facet
+
+Use the **Filter** panel above the Object Explorer to narrow Issues by structured
+facets. Available facets for the **Issue** type:
+
+| Facet | Query param | Example values |
+|---|---|---|
+| Status | `status` | `Done`, `In Progress`, `To Do` |
+| Issue type | `issueType` | `Bug`, `Story`, `Task` |
+| Assignee | `assignee` | account identifier |
+| Sprint | `sprint` | sprint ID |
+| Board | `board` | board ID |
+| Label | `label` | label string |
+| Priority | `priority` | `High`, `Medium`, `Low` |
+| Updated from | `updatedFrom` | ISO-8601 date, e.g. `2026-05-01` |
+| Updated to | `updatedTo` | ISO-8601 date, e.g. `2026-05-31` |
+
+Multiple values within a single facet are combined with **OR**; multiple
+facets are combined with **AND**. Filtering is performed against the backup
+manifest — no live Jira API calls are made.
+
+Via the API:
+
+```bash
+CONNECTION_ID=<id>
+BACKUP_POINT_ID=<backupPointId>
+
+# Filter by a single status value
+curl -sf "http://localhost:3000/api/inventory/Issue?connectionId=${CONNECTION_ID}&backupPointId=${BACKUP_POINT_ID}&status=Done" \
+  | python3 -m json.tool
+
+# Filter by multiple statuses (Done OR In Progress) — repeat the param
+curl -sf "http://localhost:3000/api/inventory/Issue?connectionId=${CONNECTION_ID}&backupPointId=${BACKUP_POINT_ID}&status=Done&status=In%20Progress" \
+  | python3 -m json.tool
+```
+
+---
+
+### Step 5 — Search by issue key or summary
+
+Use the **search box** above the Object Explorer to find Issues by key or
+summary text:
+
+- **Exact-match issue key** — type a key in `PROJECT-N` format (e.g. `PROJ-42`).
+  The Explorer returns only that issue.
+- **Tokenized summary search** — type any other text. Each whitespace-separated
+  token is matched case-insensitively against the issue summary. All tokens must
+  match (AND across tokens, OR is not supported).
+
+> **Body-content search is explicitly disabled in Phase 1.** ADF description and
+> comment text are not indexed and will not be searched.
+
+Via the API (`q` parameter):
+
+```bash
+# Exact issue-key lookup
+curl -sf "http://localhost:3000/api/inventory/Issue?connectionId=${CONNECTION_ID}&backupPointId=${BACKUP_POINT_ID}&q=PROJ-42" \
+  | python3 -m json.tool
+
+# Tokenized summary search — finds issues whose summary contains both "login" and "error"
+curl -sf "http://localhost:3000/api/inventory/Issue?connectionId=${CONNECTION_ID}&backupPointId=${BACKUP_POINT_ID}&q=login+error" \
+  | python3 -m json.tool
+```
+
+---
+
+### Step 6 — Search by attachment filename
+
+Use the **attachment filename** search to find Issues that have an attachment
+whose filename matches a given fragment. Each whitespace-separated token is
+matched case-insensitively against stored filenames (partial-match, AND across
+tokens).
+
+Via the API (`attachmentFilename` parameter):
+
+```bash
+# Find issues with an attachment whose filename contains "screenshot"
+curl -sf "http://localhost:3000/api/inventory/Issue?connectionId=${CONNECTION_ID}&backupPointId=${BACKUP_POINT_ID}&attachmentFilename=screenshot" \
+  | python3 -m json.tool
+
+# Multi-token search — filename must contain both "report" and "2026"
+curl -sf "http://localhost:3000/api/inventory/Issue?connectionId=${CONNECTION_ID}&backupPointId=${BACKUP_POINT_ID}&attachmentFilename=report+2026" \
+  | python3 -m json.tool
+```
+
+---
+
+### Step 7 — Reveal backup-point traceability (single click)
 
 Click the **⊕** button on any item row to expand its trace panel inline:
 
@@ -924,16 +1020,20 @@ echo ""
 echo "All sprint3-deliverables smoke checks passed."
 ```
 
-### Probe 7 — browse-protected-inventory: GET /api/inventory + GET /api/inventory/Issue
+### Probe 7 — browse-protected-inventory: filter facets, search & traceability
 
 ```bash
 #!/usr/bin/env bash
-# browse-protected-inventory smoke probe
+# browse-protected-inventory smoke probe — filter facets, search & traceability
 # timeout: 60s
-# Verifies GET /api/inventory (objectTypes shape) and
-# GET /api/inventory/Issue (pagination + single-click traceability).
-# Seeds a minimal backup manifest and one Issue item via Python sqlite3 so
-# the probe is self-contained — no live Jira credentials required.
+# Verifies:
+#   GET /api/inventory                              (sidebar counts)
+#   GET /api/inventory/Issue?q=SMOKE-1             (exact-key search)
+#   GET /api/inventory/Issue?status=Done           (status facet filter)
+#   GET /api/inventory/Issue?attachmentFilename=.. (attachment filename search)
+#   GET /api/inventory/Issue                       (pagination + traceability)
+# Seeds a backup manifest and two Issue items with status + attachments data
+# via Python sqlite3 — no live Jira credentials required.
 # Requires: running API server (npm run server).
 set -euo pipefail
 
@@ -942,7 +1042,7 @@ BASE="http://localhost:${PORT}"
 DB_PATH="${DB_PATH:-data/jira_workload.db}"
 SMOKE_CLOUD_ID="smoke-inv-$(date +%s)"
 
-echo "==> [1/5] Create smoke connection"
+echo "==> [1/8] Create smoke connection"
 CONN_RESPONSE=$(curl -sf -X POST "${BASE}/api/connections" \
   -H 'Content-Type: application/json' \
   -d "{
@@ -956,7 +1056,7 @@ CONN_RESPONSE=$(curl -sf -X POST "${BASE}/api/connections" \
 CONNECTION_ID=$(echo "${CONN_RESPONSE}" | python3 -c "import json,sys; print(json.load(sys.stdin)['connectionId'])")
 echo "PASS: connection created ${CONNECTION_ID}"
 
-echo "==> [2/5] Seed backup manifest + Issue items via Python sqlite3"
+echo "==> [2/8] Seed backup manifest + Issue items with status and attachments data"
 BACKUP_POINT_ID="smoke-inv-bp-$(date +%s)"
 NOW=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
 
@@ -992,18 +1092,18 @@ db.execute(
     (bp_id, conn_id, cloud_id, now, manifest))
 db.executemany(
     '''INSERT INTO backup_point_items
-       (connectionId, backupPointId, objectType, itemId, displayName, summary, changeBadge, capturedAt)
-       VALUES (?,?,'Issue',?,?,?,'added',?)''',
-    [(conn_id, bp_id, 'SMOKE-1', 'SMOKE-1', 'First smoke issue', now),
-     (conn_id, bp_id, 'SMOKE-2', 'SMOKE-2', 'Second smoke issue', now)])
+       (connectionId, backupPointId, objectType, itemId, displayName, summary, changeBadge, capturedAt, status, attachments)
+       VALUES (?,?,'Issue',?,?,?,'added',?,?,?)''',
+    [(conn_id, bp_id, 'SMOKE-1', 'SMOKE-1', 'First smoke issue', now, 'Done', '[\"screenshot.png\"]'),
+     (conn_id, bp_id, 'SMOKE-2', 'SMOKE-2', 'Second smoke issue', now, 'In Progress', None)])
 db.commit()
 db.close()
-print('Seeded backup manifest', bp_id, '+ 2 Issue items')
+print('Seeded backup manifest', bp_id, '+ 2 Issue items (SMOKE-1: Done+attachment, SMOKE-2: In Progress)')
 " "${DB_PATH}" "${CONNECTION_ID}" "${SMOKE_CLOUD_ID}" "${BACKUP_POINT_ID}" "${NOW}"
 
 echo "PASS: seed complete"
 
-echo "==> [3/5] GET /api/inventory — assert HTTP 200 + non-empty objectTypes"
+echo "==> [3/8] GET /api/inventory — sidebar counts: assert HTTP 200 + non-empty objectTypes"
 INVENTORY=$(curl -sf "${BASE}/api/inventory?connectionId=${CONNECTION_ID}")
 
 echo "${INVENTORY}" | python3 -c "
@@ -1021,7 +1121,46 @@ assert data.get('backupPointId') == '${BACKUP_POINT_ID}', \
 print(f'PASS: GET /api/inventory returned {len(otypes)} objectTypes, Issue count={by_type[\"Issue\"][\"count\"]}')
 "
 
-echo "==> [4/5] GET /api/inventory/Issue — assert HTTP 200 + non-empty items"
+echo "==> [4/8] GET /api/inventory/Issue?q=SMOKE-1 — exact-key search returns 1 item"
+EXACT_KEY=$(curl -sf \
+  "${BASE}/api/inventory/Issue?connectionId=${CONNECTION_ID}&backupPointId=${BACKUP_POINT_ID}&q=SMOKE-1")
+
+echo "${EXACT_KEY}" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+items = data.get('items', [])
+assert len(items) == 1, f'expected 1 item for exact-key q=SMOKE-1, got {len(items)}'
+assert items[0]['displayName'] == 'SMOKE-1', f'unexpected displayName: {items[0][\"displayName\"]}'
+print(f'PASS: exact-key search q=SMOKE-1 returned {len(items)} item: {items[0][\"displayName\"]}')
+"
+
+echo "==> [5/8] GET /api/inventory/Issue?status=Done — facet filter returns 1 item"
+FACET=$(curl -sf \
+  "${BASE}/api/inventory/Issue?connectionId=${CONNECTION_ID}&backupPointId=${BACKUP_POINT_ID}&status=Done")
+
+echo "${FACET}" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+items = data.get('items', [])
+assert len(items) == 1, f'expected 1 item for status=Done, got {len(items)}'
+assert items[0]['displayName'] == 'SMOKE-1', f'unexpected displayName: {items[0][\"displayName\"]}'
+print(f'PASS: status facet status=Done returned {len(items)} item: {items[0][\"displayName\"]}')
+"
+
+echo "==> [6/8] GET /api/inventory/Issue?attachmentFilename=screenshot — filename search returns 1 item"
+FNAME=$(curl -sf \
+  "${BASE}/api/inventory/Issue?connectionId=${CONNECTION_ID}&backupPointId=${BACKUP_POINT_ID}&attachmentFilename=screenshot")
+
+echo "${FNAME}" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+items = data.get('items', [])
+assert len(items) == 1, f'expected 1 item for attachmentFilename=screenshot, got {len(items)}'
+assert items[0]['displayName'] == 'SMOKE-1', f'unexpected displayName: {items[0][\"displayName\"]}'
+print(f'PASS: attachment-filename search returned {len(items)} item: {items[0][\"displayName\"]}')
+"
+
+echo "==> [7/8] GET /api/inventory/Issue — full paginated list"
 ITEM_LIST=$(curl -sf \
   "${BASE}/api/inventory/Issue?connectionId=${CONNECTION_ID}&backupPointId=${BACKUP_POINT_ID}&limit=10&offset=0")
 
@@ -1040,7 +1179,7 @@ assert pg['offset'] == 0, f'expected offset=0, got {pg[\"offset\"]}'
 print(f'PASS: GET /api/inventory/Issue returned {len(items)} item(s), total={pg[\"total\"]}')
 "
 
-echo "==> [5/5] Verify single-click traceability — backupPointId + timestamp on first item"
+echo "==> [8/8] Verify single-click traceability — backupPointId + timestamp on first item"
 echo "${ITEM_LIST}" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
