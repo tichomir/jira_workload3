@@ -20,6 +20,7 @@ import { dirname } from 'path';
 import type { IJiraHttpClient, AttachmentRecord } from '../backup/types.js';
 import { resolveAttachmentPaths } from '../types/Attachment.js';
 import type { AttachmentSidecar } from '../types/Attachment.js';
+import { scanFile } from '../sdi/scanDispatcher.js';
 
 // ---------------------------------------------------------------------------
 // Result types
@@ -32,11 +33,22 @@ export interface AttachmentItemError {
   message: string;
 }
 
+export interface AttachmentSdiResult {
+  attachmentId: string;
+  filename: string;
+  email: number;
+  apiKey: number;
+  cc: number;
+  phone: number;
+}
+
 export interface DownloadAttachmentsResult {
   /** One record per input ref; contentHash is filled in for successful downloads. */
   records: AttachmentRecord[];
   /** Per-attachment errors — never halts processing of remaining attachments. */
   errors: AttachmentItemError[];
+  /** SDI scan results for successfully downloaded attachments (matching file classes only). */
+  sdiResults: AttachmentSdiResult[];
 }
 
 // ---------------------------------------------------------------------------
@@ -67,6 +79,7 @@ export async function downloadIssueAttachments(
 ): Promise<DownloadAttachmentsResult> {
   const records: AttachmentRecord[] = [];
   const errors: AttachmentItemError[] = [];
+  const sdiResults: AttachmentSdiResult[] = [];
 
   for (const ref of attachments) {
     // -- Step 1: Download binary via canonical client (no raw fetch/axios) ------
@@ -124,6 +137,21 @@ export async function downloadIssueAttachments(
       };
       writeFileSync(paths.sidecarPath, JSON.stringify(sidecar, null, 2));
 
+      // -- Step 4: SDI scan the in-memory buffer by filename -------------------
+      try {
+        const sdiResult = scanFile(ref.filename, data);
+        sdiResults.push({
+          attachmentId: ref.id,
+          filename: ref.filename,
+          email: sdiResult.email,
+          apiKey: sdiResult.apiKey,
+          cc: sdiResult.cc,
+          phone: sdiResult.phone,
+        });
+      } catch (sdiErr) {
+        console.error(`[sdi] scan-error attachmentId=${ref.id}: ${sdiErr instanceof Error ? sdiErr.message : String(sdiErr)}`);
+      }
+
       console.log(
         `[attachment] op=download id=${ref.id} bytes=${data.length} sha256=${contentHash} outcome=ok`
       );
@@ -138,5 +166,5 @@ export async function downloadIssueAttachments(
     }
   }
 
-  return { records, errors };
+  return { records, errors, sdiResults };
 }

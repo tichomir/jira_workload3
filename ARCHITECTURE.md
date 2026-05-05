@@ -2559,3 +2559,313 @@ POST /api/connections                                  │
 The `clientIdMasked` field appears in the 201 creation response and in
 subsequent `GET /api/connections` list responses for display purposes. The
 plaintext `clientId` is never returned after the initial request.
+
+---
+
+## SDI Teaser Scanner
+
+### Overview
+
+The Sensitive Data Intelligence (SDI) teaser scanner runs during the snapshot
+pipeline to detect regulated data patterns across backed-up content. It operates
+as a post-processing step after all attachments are downloaded and before the
+backup manifest is finalized. The scanner produces aggregate rollup counts and
+activates regulation tags — it does **not** surface per-item findings.
+
+Source: T7 §2, §3, §4.
+
+### Components
+
+```
+src/workload/sdi/detectors.ts
+src/workload/sdi/scanDispatcher.ts
+src/workload/sdi/types.ts
+```
+
+The SDI scanner is split across three modules:
+- `detectors.ts` — pure functions (`detectEmails`, `detectApiKeys`, `detectCreditCards`,
+  `detectPhones`) that run regex / Luhn checks against a string buffer. No file I/O.
+- `scanDispatcher.ts` — classifies a file by extension and dispatches to the appropriate
+  detectors; handles XML tag stripping and CSV row-by-row iteration. Exposes `scanFile`.
+- `types.ts` — shared type contracts (`SdiRegulations`, `BackupPointSdiSummary`).
+
+### SDI Scanner Interface
+
+```typescript
+// src/workload/sdi/scanDispatcher.ts
+export interface ScanResult {
+  email:  number;   // count of email address matches
+  apiKey: number;   // count of API key / secret token matches
+  cc:     number;   // count of credit card number matches (Luhn-validated)
+  phone:  number;   // count of phone number matches
+  class:  string;   // file class used for dispatch (e.g. 'dev-config', 'xml', 'tabular')
+}
+
+/**
+ * Classifies the file at filePath by extension, dispatches to the appropriate
+ * detector set, and returns aggregate counts. Reads content from the provided
+ * Buffer (caller supplies the bytes; no file I/O inside scanFile).
+ */
+export function scanFile(filePath: string, buffer: Buffer): ScanResult;
+```
+
+```typescript
+// src/workload/sdi/detectors.ts
+export function detectEmails(buffer: string): number;
+export function detectApiKeys(buffer: string): number;
+export function detectCreditCards(buffer: string): number;
+export function detectPhones(buffer: string): number;
+```
+
+**Key design decisions:**
+- All four detectors are applied to every supported file class in Phase 1.
+  The `class` field in `ScanResult` is recorded for future per-class tuning.
+- Counts are additive across multiple `scanFile` calls for the same backup point
+  (the pipeline accumulates them in the `BackupPointSdiSummary`).
+
+### File-Type Dispatch Table
+
+`scanDispatcher.ts` classifies each file before dispatching to detectors.
+Classification is based solely on the file extension (case-insensitive).
+
+| File class | Extensions | `ScanResult.class` value |
+|-----------|------------|--------------------------|
+| XML (Atlassian export) | `.xml` (e.g. `entities.xml`) | `'xml'` |
+| Tabular export | `.csv`, `.xlsx`, `.tsv` | `'tabular'` |
+| Developer configuration | `.env`, `.yaml`, `.yml`, `.json`, `.toml`, `.properties`, `.config` | `'dev-config'` |
+| Text / log | `.txt`, `.log`, `.md` | `'text-log'` |
+| Unsupported | All other extensions | `'unsupported'` |
+
+Files in the `unsupported` class return zero counts and are not scanned. `.xlsx`
+files are recognised as `tabular` but skipped (no XLSX parser available); a
+`[sdi] xlsx-skipped path=<p> reason=no-parser` log line is emitted. Binary
+attachments (images, compiled binaries, archives, etc.) are excluded from SDI
+scanning in Phase 1.
+
+### Detector Definitions
+
+Four detectors run across all scanned content:
+
+| Category | `ScanResult` field | Detection rule |
+|----------|-------------------|----------------|
+| Email address | `email` | Matches strings conforming to RFC 5321 local-part + `@` + domain structure |
+| API key / secret token | `apiKey` | Matches high-entropy token patterns commonly used in API keys, bearer tokens, and secret strings (e.g. 32+ character hex/base64 sequences adjacent to key-like labels) |
+| Credit card number | `cc` | Matches 13–19 digit sequences (plain, space-separated, or dash-separated) that pass Luhn checksum validation |
+| Phone number | `phone` | Matches E.164 and NANP formatted phone number patterns |
+
+**Implementation note:** The concrete regex/algorithm for each detector lives
+entirely within `src/workload/sdi/detectors.ts`. The dispatch table and file-class
+routing live in `src/workload/sdi/scanDispatcher.ts`.
+
+### `BackupPointSdiSummary` Schema
+
+One `BackupPointSdiSummary` record is persisted alongside the `BackupManifest`
+after the snapshot pipeline completes the SDI scan pass.
+
+```typescript
+// src/workload/sdi/types.ts
+interface SdiRegulations {
+  gdpr:   'active' | 'inactive';
+  pciDss: 'active' | 'inactive';
+}
+
+interface BackupPointSdiSummary {
+  /** UUID of the backup point this summary belongs to. */
+  backupPointId: string;
+
+  /**
+   * Count of Issues (by issueKey) in which ≥1 SDI match was found across any
+   * scanned attachment. Per-item findings are not stored.
+   */
+  issueCount: number;
+
+  /**
+   * Count of Projects (by projectId) that contain ≥1 affected Issue.
+   * Derived from the set of project IDs of all affected Issues.
+   */
+  projectCount: number;
+
+  /** Regulation tag activation state. */
+  regulations: SdiRegulations;
+}
+```
+
+**Stored format:** `regulations` is persisted as a JSON object `{ "gdpr": "active"|"inactive", "pciDss": "active"|"inactive" }` in the `backup_point_sdi_summary.regulations` TEXT column.
+
+**API wire format:** The `GET /api/backup-points/:id/sdi-teaser` endpoint converts the stored object to a `regulations[]` array of `{ code, status }` entries for the operator UI. See the endpoint spec below.
+
+**HIPAA is intentionally absent.** The `regulations` object contains exactly two
+keys — `gdpr` and `pciDss`. A `hipaa` key must never appear in Phase 1
+responses or stored records. (T7 OQ-3, CLAUDE.md Non-Goals)
+
+### Regulation-Tag Activation Rules
+
+| Tag | Activation condition | Source |
+|-----|---------------------|--------|
+| `gdpr` | `email_total > 0 OR phone_total > 0` across the entire backup point | T7 §4 |
+| `pciDss` | `cc_total > 0` across the entire backup point | T7 §4 |
+| `HIPAA` | **Hidden in Phase 1** — not computed, not stored, not returned | T7 OQ-3 |
+
+Where `*_total` is the sum of that category's `ScanResult` counts across all
+`scanFile` calls for the backup point.
+
+### Pipeline Invocation Point
+
+The SDI scan pass runs **after all attachments are downloaded** and **before the
+backup manifest is finalized**. This ensures all attachment content is available
+for scanning before the summary is written.
+
+```
+Snapshot pipeline (CaptureOrchestrator):
+  …
+  Issue phase
+    ↓
+  downloadIssueAttachments   ← attachment binaries written to disk (SHA-256 verified)
+    ↓
+  ── SDI scan pass ──        ← scanDispatcher.scanFile() called per qualifying attachment
+     Accumulate ScanResult counts per backupPointId
+     Compute issueCount, projectCount rollups
+     Evaluate gdpr / pciDss activation rules
+     Write BackupPointSdiSummary to store
+    ↓
+  Manifest finalized          ← BackupManifest written to backup_manifests
+```
+
+The scan pass processes attachment files that already exist on disk (written by
+`downloadIssueAttachments`). It reads each qualifying file by extension and calls
+`scanFile(filePath, buffer)`. Non-qualifying files (`class === 'unsupported'`) are
+skipped silently.
+
+### Data Flow Diagram
+
+```
+┌───────────────────────────────────────────────────────────────────┐
+│  CaptureOrchestrator (snapshot pipeline)                          │
+│                                                                   │
+│  ┌────────────────┐    disk     ┌──────────────────────────────┐  │
+│  │ downloadIssue  │ ─────────► │ data/attachments/            │  │
+│  │ Attachments.ts │  binaries   │   {backupPointId}/{issueKey}/│  │
+│  └────────────────┘             │   {attachmentId}             │  │
+│                                 │   {attachmentId}.meta.json   │  │
+│                                 └──────────────────────────────┘  │
+│                                              │                    │
+│                                    read + classify by extension   │
+│                                              │                    │
+│                                              ▼                    │
+│                                 ┌────────────────────────┐        │
+│                                 │  scanDispatcher         │        │
+│                                 │  scanFile(filePath,     │        │
+│                                 │    buffer)              │        │
+│                                 │  → ScanResult           │        │
+│                                 └────────────────────────┘        │
+│                                              │                    │
+│                               accumulate counts per backupPointId │
+│                                              │                    │
+│                                              ▼                    │
+│                                 ┌────────────────────────┐        │
+│                                 │  BackupPointSdiSummary  │        │
+│                                 │  { backupPointId,       │        │
+│                                 │    issueCount,          │        │
+│                                 │    projectCount,        │        │
+│                                 │    regulations: {       │        │
+│                                 │      gdpr, pciDss } }   │        │
+│                                 └────────────────────────┘        │
+│                                              │                    │
+│                                           persist                 │
+│                                              ▼                    │
+│                                         SQLite store              │
+└───────────────────────────────────────────────────────────────────┘
+                                              │
+                              ┌───────────────┘
+                              ▼
+           GET /api/backup-points/{id}/sdi-teaser
+```
+
+### GET /api/backup-points/{id}/sdi-teaser
+
+Stub endpoint returning the pre-computed `BackupPointSdiSummary` for a given
+backup point. The operator UI calls this endpoint to render the SDI teaser badge
+and active regulation tags.
+
+**Path parameter:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `{id}` | UUID of the backup point (`backupPointId`) |
+
+**Query parameters:** None required. The endpoint looks up the SDI summary by
+`backupPointId` only (no `connectionId` scoping in the Phase 1 stub).
+
+**Success response (200):**
+
+```json
+{
+  "backupPointId": "bp-20260505-abc123",
+  "issueCount": 42,
+  "projectCount": 3,
+  "regulations": [
+    { "code": "GDPR",    "status": "active"   },
+    { "code": "PCI_DSS", "status": "inactive" }
+  ]
+}
+```
+
+**Response when no sensitive data was detected (200):**
+
+```json
+{
+  "backupPointId": "bp-20260505-abc123",
+  "issueCount": 0,
+  "projectCount": 0,
+  "regulations": [
+    { "code": "GDPR",    "status": "inactive" },
+    { "code": "PCI_DSS", "status": "inactive" }
+  ]
+}
+```
+
+The `regulations` array always contains exactly two entries in Phase 1: `GDPR`
+and `PCI_DSS`. HIPAA is intentionally excluded (T7 OQ-3).
+
+**Error responses:**
+
+| Status | `error` field | Meaning |
+|--------|--------------|---------|
+| `404` | `not_found` | No SDI summary row found for the requested `backupPointId` |
+
+### UI — Teaser Badge
+
+The operator UI renders a `'Sensitive data detected'` teaser badge when
+`issueCount > 0`. The badge is accompanied by the active regulation tags:
+
+- **GDPR** chip — highlighted when `status === 'active'` on the `GDPR` entry
+- **PCI DSS** chip — highlighted when `status === 'active'` on the `PCI_DSS` entry
+- **HIPAA** chip — **never rendered in Phase 1** (filtered client-side by `r.code !== 'HIPAA'`) (T7 OQ-3)
+
+When `issueCount === 0`, the badge is replaced by "No sensitive data detected in this backup point."
+
+**Teaser badge rendering rules:**
+
+| Condition | UI state |
+|-----------|---------|
+| `issueCount > 0` AND `GDPR active` | Badge shown; GDPR chip highlighted |
+| `issueCount > 0` AND `PCI_DSS active` | Badge shown; PCI DSS chip highlighted |
+| `issueCount > 0` AND both active | Badge shown; both chips highlighted |
+| `issueCount === 0` | "No sensitive data detected" text shown |
+| HIPAA | Never shown in Phase 1 |
+
+### Design Constraints
+
+- **No per-item findings stored or returned.** Only aggregate `issueCount` and
+  `projectCount` rollups are persisted. Individual issue keys with matches are
+  not surfaced in Phase 1.
+- **HIPAA is explicitly hidden.** The `regulations` object contains only `GDPR`
+  and `PCI_DSS`. Implementations must not add a `HIPAA` key.
+- **Scan coverage is attachment-only.** SDI scanning applies to qualifying
+  attachment file types. Issue field text (summary, description, comment ADF)
+  is not scanned in Phase 1.
+- **Counts are additive.** The pipeline accumulates `ScanResult` counts across all
+  `scanFile` calls for a backup point before computing rollups.
+- **Scan failures are non-halting.** A failure to scan an individual attachment
+  (e.g. decode error) is logged and counted as a scan error but does not halt the
+  snapshot job. The manifest is still finalized.

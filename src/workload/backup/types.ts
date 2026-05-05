@@ -228,6 +228,13 @@ export interface CaptureRunResult {
    * Subsequent phases are not executed after a failure (T5 §5.2).
    */
   phaseDiagnostic?: string;
+  /**
+   * SDI teaser summary computed at backup-point level from scanning
+   * attachments and synthesized entities.xml across all projects.
+   * Present when the Issue phase completes (even with errors).
+   * Source: T7 §2–§4.
+   */
+  sdiSummary?: import('../sdi/types.js').BackupPointSdiSummary;
 }
 
 /**

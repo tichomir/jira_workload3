@@ -563,3 +563,44 @@ This is sprint 3 of 3 for the phase. Plan a slice of the deliverables appropriat
 - ✅ QA: doc-grounding verification for sprint 14 docs — Qa Engineer (⚡ Quick, 2 SP)
 
 ---
+### Sprint 15 — SDI Teaser Scanner & Compliance Tags | 2026-05-05 | ⏳ in progress | 26 SP est.
+**Goal:** [Phase: SDI Teaser & Compliance Tag Surfacing]
+Run the Sensitive Data Intelligence teaser scan during backup across entities, tabular exports, dev-config attachments, and text/log attachments. Surface aggregate counts and activate GDPR/PCI DSS regulation tags in the operator UI. This phase delivers the view-sdi-teaser operator flow.
+
+Deliverables:
+- SDI scanner detecting email addresses, API keys/secret tokens, credit card numbers, and phone numbers
+- Scan coverage across entities.xml, tabular exports (.csv/.xlsx/.tsv), dev-config (.env/.yaml/.yml/.json/.toml/.properties/.config), and text/log (.txt/.log/.md)
+- Aggregate issue_count and project_count rollups per backup point (no per-item findings)
+- GDPR regulation tag activation on email or phone detection
+- PCI DSS regulation tag activation on credit card detection
+- HIPAA tag explicitly hidden in Phase 1
+- Teaser badge 'Sensitive data detected' rendered in operator UI with active regulation tags
+
+_Sprint started. Role checkpoints below will update as work completes._
+
+---
+### Sprint 15 — SDI Teaser Scanner & Compliance Tags | 2026-05-05 | ✅ done | 26 SP
+**Goal:** [Phase: SDI Teaser & Compliance Tag Surfacing]
+Run the Sensitive Data Intelligence teaser scan during backup across entities, tabular exports, dev-config attachments, and text/log attachments. Surface aggregate counts and activate GDPR/PCI DSS regulation tags in the operator UI. This phase delivers the view-sdi-teaser operator flow.
+
+Deliverables:
+- SDI scanner detecting email addresses, API keys/secret tokens, credit card numbers, and phone numbers
+- Scan coverage across entities.xml, tabular exports (.csv/.xlsx/.tsv), dev-config (.env/.yaml/.yml/.json/.toml/.properties/.config), and text/log (.txt/.log/.md)
+- Aggregate issue_count and project_count rollups per backup point (no per-item findings)
+- GDPR regulation tag activation on email or phone detection
+- PCI DSS regulation tag activation on credit card detection
+- HIPAA tag explicitly hidden in Phase 1
+- Teaser badge 'Sensitive data detected' rendered in operator UI with active regulation tags
+
+**Delivered:**
+- ✅ Define SDI scanner interface and teaser data contract in ARCHITECTURE.md — Software Architect (◈ Standard, 3 SP)
+- ✅ Implement SDI detectors (email, API key, credit card, phone) — Backend Developer (◈ Standard, 3 SP)
+- ✅ Implement file-type dispatcher for SDI scan coverage — Backend Developer (◈ Standard, 3 SP)
+- ✅ Wire SDI scanner into snapshot pipeline and persist BackupPointSdiSummary — Backend Developer (◉ Deep, 5 SP)
+- ✅ Add Platform Stub endpoint GET /api/backup-points/{id}/sdi-teaser — Backend Developer (⚡ Quick, 2 SP)
+- ✅ Render SDI teaser badge and regulation tags in operator UI — Frontend Developer (◈ Standard, 3 SP)
+- ✅ End-to-end QA: SDI teaser detection and regulation activation — Qa Engineer (◈ Standard, 3 SP)
+- ✅ Update DEMO.md and CHANGELOG.md for view-sdi-teaser flow — Devops Engineer (⚡ Quick, 2 SP)
+- ✅ Doc-grounding verification for sprint 15 docs — Qa Engineer (⚡ Quick, 2 SP)
+
+---

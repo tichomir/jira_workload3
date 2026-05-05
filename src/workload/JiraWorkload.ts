@@ -171,6 +171,36 @@ export class JiraWorkload implements PlatformWorkloadInterface {
 
     emitter.complete(captureResult.errorCount);
 
+    // -------------------------------------------------------------------------
+    // SDI: persist BackupPointSdiSummary and emit structured log line
+    // -------------------------------------------------------------------------
+    const sdiSummary = captureResult.sdiSummary ?? {
+      backupPointId: manifestId,
+      issueCount: 0,
+      projectCount: 0,
+      regulations: { gdpr: 'inactive' as const, pciDss: 'inactive' as const },
+    };
+
+    db.prepare(
+      `INSERT OR REPLACE INTO backup_point_sdi_summary
+         (backupPointId, issueCount, projectCount, regulations, createdAt)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run(
+      sdiSummary.backupPointId,
+      sdiSummary.issueCount,
+      sdiSummary.projectCount,
+      JSON.stringify(sdiSummary.regulations),
+      captureResult.completedAt
+    );
+
+    console.log(
+      `[sdi] summary backupPointId=${manifestId}` +
+        ` issueCount=${sdiSummary.issueCount}` +
+        ` projectCount=${sdiSummary.projectCount}` +
+        ` gdpr=${sdiSummary.regulations.gdpr}` +
+        ` pciDss=${sdiSummary.regulations.pciDss}`
+    );
+
     const customFieldPhase = captureResult.phaseResults.find(
       (p) => p.phase === 'CustomField'
     );

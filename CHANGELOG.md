@@ -4,6 +4,80 @@ All notable changes are documented here by sprint.
 
 ---
 
+## [Sprint 15] — 2026-05-05 — SDI Teaser Scanner & Compliance Tags
+
+### Added
+
+#### SDI detectors — `src/workload/sdi/detectors.ts`
+- `detectEmails(buffer)` — RFC-5322 simplified regex; counts email addresses found in text.
+- `detectApiKeys(buffer)` — two-pass detection: well-known prefixed tokens (AWS AKIA, GitHub
+  `ghp_`/`gho_`/`ghs_`/`ghr_`, Slack `xox*`, Stripe `sk_live_`, Google `AIza`) plus
+  generic 32+-character sequences with Shannon entropy ≥ 4.0.
+- `detectCreditCards(buffer)` — matches 13–19 digit sequences (plain, space-separated, or
+  dash-separated); filters candidates via Luhn checksum validation before counting.
+- `detectPhones(buffer)` — E.164 international format (`+1…`) and North American format
+  (`(800) 555-1234`, `800-555-1234`, `800.555.1234`).
+- Source: T7 §2, §3.
+
+#### SDI scan dispatcher — `src/workload/sdi/scanDispatcher.ts`
+- `scanFile(filePath, buffer)` — classifies the file by extension, dispatches to the
+  appropriate scan strategy, and returns `ScanResult { email, apiKey, cc, phone, class }`.
+- File class routing:
+
+  | Class | Extensions / filenames |
+  |---|---|
+  | `xml` | `.xml` (entities export; XML tags stripped before scanning) |
+  | `tabular` | `.csv`, `.tsv`, `.xlsx` (scanned row-by-row; `.xlsx` skipped — no parser) |
+  | `dev-config` | `.env`, `.yaml`, `.yml`, `.json`, `.toml`, `.properties`, `.config` |
+  | `text-log` | `.txt`, `.log`, `.md` |
+  | `unsupported` | All other extensions — returns zero counts |
+
+- Emits `[sdi] scan path=<p> class=<c> email=<n> apiKey=<n> cc=<n> phone=<n>` per file.
+- `.xlsx` files emit an additional `[sdi] xlsx-skipped path=<p> reason=no-parser` line.
+- Source: T7 §3, §4.
+
+#### SDI type contracts — `src/workload/sdi/types.ts`
+- `SdiRegulations` — `{ gdpr: 'active' | 'inactive'; pciDss: 'active' | 'inactive' }`.
+- `BackupPointSdiSummary` — `{ backupPointId, issueCount, projectCount, regulations }`.
+
+#### `GET /api/backup-points/:id/sdi-teaser` — `src/routes/backup-points.ts`
+- Returns the SDI aggregate summary for a backup point:
+  `{ backupPointId, issueCount, projectCount, regulations: [{ code, status }] }`.
+- `regulations` always contains exactly two entries in Phase 1: `GDPR` and `PCI_DSS`.
+  HIPAA is intentionally excluded from the Phase 1 response (T7 OQ-3).
+- GDPR entry activates when any email or phone detector fired during the scan.
+- PCI DSS entry activates when any credit card detector fired.
+- `404 not_found` when no SDI summary row exists for the requested backup point.
+- Source: T7 §4.
+
+#### Database migration — `src/db/migrations/015_backup_point_sdi_summary.sql`
+- `backup_point_sdi_summary` table — one row per backup point holding aggregate SDI results.
+- Columns: `backupPointId` (PK, FK → `backup_manifests`), `issueCount INTEGER NOT NULL DEFAULT 0`,
+  `projectCount INTEGER NOT NULL DEFAULT 0`, `regulations TEXT NOT NULL DEFAULT '{}'` (JSON),
+  `createdAt TEXT NOT NULL`.
+- Source: T7 §4.
+
+#### SDI Teaser Panel UI — `src/ui/components/SdiTeaserPanel.tsx`
+- `SdiTeaserPanel({ backupPointId })` — fetches `GET /api/backup-points/:id/sdi-teaser` on
+  mount; renders badge and regulation chips.
+- **Badge** — `⚠ Sensitive data detected` shown when `issueCount > 0`; replaced by
+  `No sensitive data detected in this backup point.` when `issueCount === 0`.
+- **Subtext** — `N issues across M projects` rendered beneath the badge when findings exist.
+- **Regulation chips** — one chip per regulation entry; chip highlighted when `status === 'active'`.
+  HIPAA chip is filtered out client-side (`r.code !== 'HIPAA'`) — never rendered in Phase 1.
+- `buildSdiDisplay(data)` — pure helper; directly testable in isolation.
+- Source: T7 §4.
+
+> **HIPAA tag hidden in Phase 1.** The HIPAA regulation chip is intentionally excluded from
+> both the API response and the UI panel. Full HIPAA teaser profiling is a Phase 2 deliverable
+> requiring a separate T7-JSM specification (T7 OQ-3).
+
+### No new environment variables
+No new environment variables are introduced in this sprint. All SDI thresholds and
+classification rules are compile-time constants in `detectors.ts` and `scanDispatcher.ts`.
+
+---
+
 ## [Phase 4 Sprint 3] — 2026-05-05 — Restore Orchestrator, SSE Phase Stream & Heartbeat Telemetry
 
 ### Added

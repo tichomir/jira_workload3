@@ -7,6 +7,7 @@ import { inventoryRouter } from './routes/inventory.js';
 import { policiesRouter } from './routes/policies.js';
 import { discoverRouter } from './routes/discover.js';
 import { jobsRouter } from './routes/jobs.js';
+import { backupPointsRouter } from './routes/backup-points.js';
 import { getDb } from './db/database.js';
 
 const app = express();
@@ -21,6 +22,7 @@ app.use('/api/inventory', inventoryRouter);
 app.use('/api/policies', policiesRouter);
 app.use('/api/discover', discoverRouter);
 app.use('/api/jobs', jobsRouter);
+app.use('/api/backup-points', backupPointsRouter);
 
 getDb();
 

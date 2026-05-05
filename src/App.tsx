@@ -6,6 +6,7 @@ import { InventorySidebar, type SidebarObjectType } from './ui/components/Invent
 import { ObjectExplorer } from './ui/components/ObjectExplorer';
 import { RestoreWizard } from './platform/ui/restore/RestoreWizard';
 import { RestoreJobProgress } from './platform/ui/restore/RestoreJobProgress';
+import { SdiTeaserPanel } from './ui/components/SdiTeaserPanel';
 
 export function App() {
   return (
@@ -91,12 +92,15 @@ function InventoryPage() {
         onSelect={setSelectedType}
         onInventoryLoad={(d) => setBackupPointId(d.backupPointId)}
       />
-      <ObjectExplorer
-        connectionId={connectionId}
-        backupPointId={backupPointId}
-        selectedType={selectedType}
-        siteName={siteName}
-      />
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '16px', minWidth: 0 }}>
+        {backupPointId && <SdiTeaserPanel backupPointId={backupPointId} />}
+        <ObjectExplorer
+          connectionId={connectionId}
+          backupPointId={backupPointId}
+          selectedType={selectedType}
+          siteName={siteName}
+        />
+      </div>
     </main>
   );
 }

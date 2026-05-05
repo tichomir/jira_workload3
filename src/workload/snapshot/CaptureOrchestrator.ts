@@ -11,6 +11,8 @@
 import { discoverFieldContexts } from '../backup/discoverFieldContexts.js';
 import { assembleIssuePayload, assertCoverageInvariant } from './assembleIssuePayload.js';
 import { downloadIssueAttachments } from './downloadIssueAttachments.js';
+import { scanFile } from '../sdi/scanDispatcher.js';
+import type { BackupPointSdiSummary } from '../sdi/types.js';
 import type {
   IJiraHttpClient,
   ICaptureOrchestrator,
@@ -21,7 +23,21 @@ import type {
   FieldContextRecord,
   BackupManifest,
   RawIssue,
+  ProjectRecord,
 } from '../backup/types.js';
+
+function synthesizeEntitiesXml(project: ProjectRecord): string {
+  const escape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return (
+    `<?xml version="1.0" encoding="UTF-8"?>\n` +
+    `<entities>\n` +
+    `  <project key="${escape(project.projectKey)}" name="${escape(project.projectName)}" ` +
+    `id="${escape(project.projectId)}" type="${escape(project.projectTypeKey)}">\n` +
+    `    <description></description>\n` +
+    `  </project>\n` +
+    `</entities>`
+  );
+}
 
 export class CaptureOrchestrator implements ICaptureOrchestrator {
   private readonly client: IJiraHttpClient;
@@ -108,6 +124,13 @@ export class CaptureOrchestrator implements ICaptureOrchestrator {
     // Enumerates all issues per project via POST /rest/api/3/search/jql.
     // Emits a heartbeat event per project to satisfy the ≤10 s contract.
     // -------------------------------------------------------------------------
+    // SDI accumulators (backup-point level)
+    const issuesWithDetections = new Set<string>();
+    const projectsWithIssueDetections = new Set<string>();
+    let sdiTotalEmail = 0;
+    let sdiTotalPhone = 0;
+    let sdiTotalCreditCard = 0;
+
     {
       const allCustomFieldIds = fieldContexts.map((f) => f.fieldId);
       const projects = this.manifest.projects;
@@ -151,6 +174,21 @@ export class CaptureOrchestrator implements ICaptureOrchestrator {
                       `attachmentId=${attErr.attachmentId} outcome=${attErr.outcome}: ${attErr.message}`
                   );
                 }
+
+                // SDI: accumulate per-issue detection flag from attachment scans
+                let issueHasDetection = false;
+                for (const sdi of attResult.sdiResults) {
+                  sdiTotalEmail += sdi.email;
+                  sdiTotalPhone += sdi.phone;
+                  sdiTotalCreditCard += sdi.cc;
+                  if (sdi.email > 0 || sdi.apiKey > 0 || sdi.cc > 0 || sdi.phone > 0) {
+                    issueHasDetection = true;
+                  }
+                }
+                if (issueHasDetection) {
+                  issuesWithDetections.add(payload.key);
+                  projectsWithIssueDetections.add(project.projectKey);
+                }
               }
 
               issueCaptured++;
@@ -186,6 +224,21 @@ export class CaptureOrchestrator implements ICaptureOrchestrator {
           });
           lastHeartbeatMs = Date.now();
 
+          // SDI: scan synthesized entities.xml for this project (project-level data)
+          try {
+            const entitiesXml = synthesizeEntitiesXml(project);
+            const entitiesScan = scanFile('entities.xml', Buffer.from(entitiesXml, 'utf-8'));
+            sdiTotalEmail += entitiesScan.email;
+            sdiTotalPhone += entitiesScan.phone;
+            sdiTotalCreditCard += entitiesScan.cc;
+          } catch (sdiErr) {
+            console.error(
+              `[sdi] entities-scan-error project=${project.projectKey}: ${
+                sdiErr instanceof Error ? sdiErr.message : String(sdiErr)
+              }`
+            );
+          }
+
           console.log(
             `[snapshot] project=${project.projectKey} issues=${issues.length}` +
               ` captured=${issueCaptured} errored=${issueErrorCount}`
@@ -218,6 +271,22 @@ export class CaptureOrchestrator implements ICaptureOrchestrator {
       });
     }
 
+    // -------------------------------------------------------------------------
+    // SDI Summary — backup-point level aggregation
+    // issue_count: issues with at least one detection (any type)
+    // project_count: projects with at least one issue having a detection
+    // HIPAA omitted from Phase 1 output
+    // -------------------------------------------------------------------------
+    const sdiSummary: BackupPointSdiSummary = {
+      backupPointId: options.manifestId,
+      issueCount: issuesWithDetections.size,
+      projectCount: projectsWithIssueDetections.size,
+      regulations: {
+        gdpr: sdiTotalEmail + sdiTotalPhone > 0 ? 'active' : 'inactive',
+        pciDss: sdiTotalCreditCard > 0 ? 'active' : 'inactive',
+      },
+    };
+
     return {
       backupPointId: options.manifestId,
       completedAt: new Date().toISOString(),
@@ -225,6 +294,7 @@ export class CaptureOrchestrator implements ICaptureOrchestrator {
       itemCount: totalItemCount,
       errorCount: totalErrorCount,
       fieldContexts,
+      sdiSummary,
     };
   }
 }

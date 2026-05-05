@@ -1,8 +1,11 @@
-# Doc Grounding Report — Sprint 15 (Phase 4 Sprint 3 of 3)
+# Doc-Grounding Report — Sprint 15 (SDI Teaser Scanner & Compliance Tags)
 
-_Sprint: Restore Orchestrator, SSE Phase Stream & Heartbeat Telemetry_
-_Generated: 2026-05-05_
-_Scope: DEMO.md, CHANGELOG.md, INSTALL.md, ARCHITECTURE.md_
+_Generated: 2026-05-05 | QA Engineer_
+
+Sprint deliverables verified: SDI detectors (`detectors.ts`), scan dispatcher
+(`scanDispatcher.ts`), SDI type contracts (`types.ts`), backup-points route
+(`backup-points.ts`), database migration (`015_backup_point_sdi_summary.sql`),
+`SdiTeaserPanel` UI component, and DEMO.md Probe 11.
 
 ---
 
@@ -10,146 +13,228 @@ _Scope: DEMO.md, CHANGELOG.md, INSTALL.md, ARCHITECTURE.md_
 
 | Doc | References checked | Exists=yes | Exists=no | In-sprint fixes | P0 carry-forwards |
 |---|---|---|---|---|---|
-| DEMO.md | 5 | 5 | 0 | 0 | 0 |
-| CHANGELOG.md | 18 | 18 | 0 | 0 | 0 |
-| INSTALL.md | 0 | — | — | 0 | 0 |
-| ARCHITECTURE.md | 8 | 7 | 1 | 1 | 0 |
-| **Total** | **31** | **30** | **1→0** | **1** | **0** |
+| ARCHITECTURE.md | 28 | 19 | 9 | 9 | 0 |
+| CHANGELOG.md | 22 | 22 | 0 | 0 | 0 |
+| DEMO.md | 13 | 13 | 0 | 0 | 0 |
+| **Total** | **63** | **54** | **9→0** | **9** | **0** |
 
-One in-sprint fix applied (ARCHITECTURE.md main Restore Flow Sequence Diagram stale API call). Zero unresolved misses at close.
-
----
-
-## DEMO.md
-
-### New references in Sprint 15 (Step 5 — Heartbeat & Stalled Detection)
-
-| Reference | Type | Exists | Section |
-|---|---|---|---|
-| `src/workload/restore/HeartbeatEmitter.test.ts` | file path (probe command) | yes | Probe 10 |
-| `src/routes/restore-jobs-sse-http.test.ts` | file path (probe command) | yes | Probe 10 |
-| `{ "type": "heartbeat", "jobId": "…", "ts": "…", "currentPhase": "issue" }` | SSE event shape | yes — HeartbeatEmitter emits this shape via `types.ts` `HeartbeatEvent` which includes `currentPhase: RestorePhase` | Step 5 |
-| `Last heartbeat: Xs ago` | UI string | yes — `RestoreJobProgress.tsx` line 289 | Step 5 |
-| `No progress received for over 20 seconds. The restore job may be stalled.` | UI string | yes — `StatusBanner` in `RestoreJobProgress.tsx` | Step 5 |
-
-All five references verified. No misses.
-
----
-
-## CHANGELOG.md
-
-### New files
-
-| Reference | Exists | Notes |
-|---|---|---|
-| `src/workload/restore/HeartbeatEmitter.ts` | yes | Present in file tree and confirmed read |
-| `src/workload/restore/HeartbeatEmitter.test.ts` | yes | Present in file tree |
-| `src/platform/restore/sseEvents.ts` | yes | Present in `src/platform/restore/` |
-| `src/routes/restore-jobs-sse-http.test.ts` | yes | Present in file tree |
-
-### Updated files
-
-| Reference | Exists | Notes |
-|---|---|---|
-| `src/workload/restore/RestoreOrchestrator.ts` | yes | Imports `HeartbeatEmitter`; calls `heartbeat.start(phase)` / `heartbeat.stop()` |
-| `src/routes/restore-jobs.ts` | yes | Imports `STALLED_THRESHOLD_MS` from `sseEvents.js`; stalled watchdog + 9 s SSE comment heartbeat |
-| `src/platform/ui/restore/RestoreJobProgress.tsx` | yes | Heartbeat indicator, stalled state, `completed_with_errors` banner |
-
-### Constants and symbols
-
-| Reference | Exists | Location |
-|---|---|---|
-| `HEARTBEAT_INTERVAL_MS = 10_000` | yes | `HeartbeatEmitter.ts` |
-| `MAX_HEARTBEAT_INTERVAL_MS = 10_000` | yes | `sseEvents.ts` line 386 |
-| `STALLED_THRESHOLD_MS = 20_000` | yes | `sseEvents.ts` line 399 |
-| `HeartbeatEmitter` class | yes | `HeartbeatEmitter.ts` |
-| `start(phase)` method | yes | `HeartbeatEmitter.ts` |
-| `stop()` method | yes | `HeartbeatEmitter.ts` |
-| `SseEvent` union type | yes | `sseEvents.ts` |
-| `RestorePhaseValue` string-literal union | yes | `sseEvents.ts` |
-
-### Behaviors
-
-| Reference | Exists | Verified in |
-|---|---|---|
-| 9 s SSE comment heartbeat (`: heartbeat\n\n`) | yes | `restore-jobs.ts` — `setInterval(..., 9_000)` |
-| Stalled watchdog fires at `STALLED_THRESHOLD_MS` (20 000 ms) | yes | `restore-jobs.ts` `resetStalledWatchdog()` |
-| `"Completed with N errors"` status text | yes | `StatusBanner` in `RestoreJobProgress.tsx` |
-| `"Last heartbeat: Xs ago"` indicator | yes | `RestoreJobProgress.tsx` heartbeat div |
-
-All 18 references verified. No misses.
-
----
-
-## INSTALL.md
-
-No new file paths, commands, env-vars, npm scripts, ports, or component references were added to INSTALL.md in Sprint 15. Existing §6 API surface table is unchanged.
-
-No references to verify.
+Nine in-sprint fixes applied to ARCHITECTURE.md (all in the SDI Teaser Scanner section added
+this sprint). CHANGELOG.md and DEMO.md are clean. Zero unresolved misses at close.
 
 ---
 
 ## ARCHITECTURE.md
 
-### New "Restore Orchestrator & SSE Phase Stream" section — key files table
+### SDI Teaser Scanner — Component section
 
-| Reference | Exists | Notes |
-|---|---|---|
-| `src/platform/restore/sseEvents.ts` | yes | Platform boundary type file |
-| `HeartbeatEmitter` | yes | `src/workload/restore/HeartbeatEmitter.ts` |
-| `HEARTBEAT_INTERVAL_MS` | yes | `HeartbeatEmitter.ts` |
-| `MAX_HEARTBEAT_INTERVAL_MS` | yes | `sseEvents.ts` |
-| `STALLED_THRESHOLD_MS` | yes | `sseEvents.ts` |
+| Reference | Exists | Section | Resolution |
+|-----------|--------|---------|------------|
+| `src/workload/sdi/SdiScanner.ts` | **N** | Component | **Fixed in-sprint** — file does not exist. Actual implementation split across `detectors.ts`, `scanDispatcher.ts`, `types.ts`. Updated component block to list all three files. |
+| `src/workload/sdi/detectors.ts` | Y | Component (after fix) | exists ✓ |
+| `src/workload/sdi/scanDispatcher.ts` | Y | Component (after fix) | exists ✓ |
+| `src/workload/sdi/types.ts` | Y | Component (after fix) | exists ✓ |
 
-### "Progress Heartbeat and Stalled Detection" section
+### SDI Teaser Scanner — Interface section
 
-| Reference | Exists | Notes |
-|---|---|---|
-| `STALLED_THRESHOLD_MS` source | yes (minor) | Doc attributes constant to `src/workload/types/ProgressEvent.ts`; actual import in `restore-jobs.ts` is from `src/platform/restore/sseEvents.ts`. Both files export the same value (20 000 ms). Not a factual error; both exports are authoritative. No fix required. |
+| Reference | Exists | Section | Resolution |
+|-----------|--------|---------|------------|
+| `scanText(content, sourceType): DetectionCounts` | **N** | SdiScanner Interface | **Fixed in-sprint** — function does not exist. Actual entry point is `scanFile(filePath, buffer): ScanResult` in `scanDispatcher.ts`. Updated interface block to show actual exported signatures. |
+| `DetectionCounts` interface | **N** | SdiScanner Interface | **Fixed in-sprint** — type does not exist. Actual result type is `ScanResult` (in `scanDispatcher.ts`). Updated interface block. |
+| `DetectionCounts.creditCard` field | **N** | SdiScanner Interface | **Fixed in-sprint** — field is named `cc` not `creditCard` in `ScanResult`. Updated Detector Definitions table. |
+| `SdiSourceType` type | **N** | SdiScanner Interface | **Fixed in-sprint** — type does not exist in codebase. `scanDispatcher.ts` uses internal `FileClass` type. Removed from interface section. |
+| `detectEmails(buffer)` | Y | Interface (after fix) | in `src/workload/sdi/detectors.ts` ✓ |
+| `detectApiKeys(buffer)` | Y | Interface (after fix) | in `src/workload/sdi/detectors.ts` ✓ |
+| `detectCreditCards(buffer)` | Y | Interface (after fix) | in `src/workload/sdi/detectors.ts` ✓ |
+| `detectPhones(buffer)` | Y | Interface (after fix) | in `src/workload/sdi/detectors.ts` ✓ |
+| `scanFile(filePath, buffer)` | Y | Interface (after fix) | in `src/workload/sdi/scanDispatcher.ts` ✓ |
+| `ScanResult` interface | Y | Interface (after fix) | in `src/workload/sdi/scanDispatcher.ts` ✓ |
 
-### Main Restore Flow Sequence Diagram — IN-SPRINT FIX
+### SDI Teaser Scanner — BackupPointSdiSummary Schema section
 
-| Reference | Exists | Fix status |
-|---|---|---|
-| `Orch->>API: GET /rest/api/3/myself` (board scope re-check) | **no — stale** | **Fixed in-sprint** |
+| Reference | Exists | Section | Resolution |
+|-----------|--------|---------|------------|
+| `BackupPointSdiSummary.issue_count` (snake_case) | **N** | BackupPointSdiSummary Schema | **Fixed in-sprint** — field is `issueCount` (camelCase) in `src/workload/sdi/types.ts`. Updated schema block. |
+| `BackupPointSdiSummary.project_count` (snake_case) | **N** | BackupPointSdiSummary Schema | **Fixed in-sprint** — field is `projectCount` (camelCase) in `types.ts`. Updated schema block. |
+| `regulations.GDPR` / `regulations.PCI_DSS` (uppercase keys) | **N** | BackupPointSdiSummary Schema | **Fixed in-sprint** — stored keys are `gdpr` and `pciDss` (camelCase) per `SdiRegulations` in `types.ts`. Updated schema block; added note about wire-format conversion by the route. |
+| `SdiRegulations` type | Y | Schema (after fix) | in `src/workload/sdi/types.ts` ✓ |
+| `BackupPointSdiSummary` type | Y | Schema (after fix) | in `src/workload/sdi/types.ts` — camelCase fields verified ✓ |
 
-**Issue:** The main Restore Flow Sequence Diagram (Restore Subsystem section, previously line 1306) showed `Orch->>API: GET /rest/api/3/myself` for the board scope re-check step. The Sprint 14 fix corrected the Guard Chain sub-diagram but left the main sequence diagram stale. The actual implementation (`boardScopeRecheck.ts`) reads the stored `scopes` column from the `credentials` table — no HTTP call.
+### SDI Teaser Scanner — Pipeline Invocation Point section
 
-**Fix applied:** Changed to `Orch->>DB: SELECT scopes FROM credentials WHERE connectionId = ? (verify write:board-scope:jira-software + write:board-scope.admin:jira-software)` — matching the Guard Chain sub-diagram and the actual implementation.
+| Reference | Exists | Section | Resolution |
+|-----------|--------|---------|------------|
+| `SdiScanner.scanText()` (in pipeline diagram) | **N** | Pipeline Invocation Point | **Fixed in-sprint** — changed to `scanDispatcher.scanFile()` ✓ |
+| `DetectionCounts` (in pipeline diagram) | **N** | Pipeline Invocation Point | **Fixed in-sprint** — changed to `ScanResult counts` ✓ |
+| `downloadIssueAttachments` (CaptureOrchestrator pipeline) | Y | Pipeline Invocation Point | referenced function exists in `src/workload/snapshot/downloadIssueAttachments.ts` ✓ |
+| `CaptureOrchestrator` | Y | Pipeline Invocation Point | in `src/workload/snapshot/CaptureOrchestrator.ts` ✓ |
+| `data/attachments/{backupPointId}/{issueKey}/{attachmentId}` | Y | Data Flow Diagram | path layout matches `downloadIssueAttachments.ts` disk layout ✓ |
+
+### SDI Teaser Scanner — GET /api/backup-points/{id}/sdi-teaser section
+
+| Reference | Exists | Section | Resolution |
+|-----------|--------|---------|------------|
+| `GET /api/backup-points/{id}/sdi-teaser` endpoint | Y | API endpoint | mounted in `src/routes/backup-points.ts` as `router.get('/:id/sdi-teaser', handleGetSdiTeaser)` ✓ |
+| `connectionId` query parameter (marked Required) | **N** | API endpoint query params | **Fixed in-sprint** — handler `handleGetSdiTeaser` does not read `req.query.connectionId`; lookup is by `req.params.id` only. Removed required-param row; noted Phase 1 stub behaviour. |
+| `issueCount` field in success response | Y | API endpoint (after fix) | returned by `handleGetSdiTeaser` ✓ |
+| `projectCount` field in success response | Y | API endpoint (after fix) | returned by `handleGetSdiTeaser` ✓ |
+| `regulations[]` array of `{ code, status }` | Y | API endpoint (after fix) | built by `handleGetSdiTeaser` lines 39–42 ✓ |
+| Error code `sdi_summary_not_found` | **N** | Error responses | **Fixed in-sprint** — actual code returns `{ error: 'not_found' }`. Updated error table to single `404 not_found` row. |
+| Error code `connection_not_found` | **N** | Error responses | **Fixed in-sprint** — no connection lookup performed in Phase 1 stub. Removed from error table. |
+| Error code `backup_point_not_found` | **N** | Error responses | **Fixed in-sprint** — handler does not distinguish "backup point row missing" from "SDI row missing"; both return `not_found`. Removed from error table. |
+
+### SDI Teaser Scanner — UI Teaser Badge section
+
+| Reference | Exists | Section | Resolution |
+|-----------|--------|---------|------------|
+| `src/ui/components/SdiTeaserPanel.tsx` | Y | UI — Teaser Badge | exists ✓ |
+| `SdiTeaserPanel({ backupPointId })` | Y | UI — Teaser Badge | exported function in `SdiTeaserPanel.tsx` ✓ |
+| `buildSdiDisplay(data)` | Y | UI — Teaser Badge | exported helper in `SdiTeaserPanel.tsx` ✓ |
+| `r.code !== 'HIPAA'` HIPAA filter | Y | UI — Teaser Badge | in `buildSdiDisplay` line 34 ✓ |
+
+### SDI Teaser Scanner — Database migration section
+
+| Reference | Exists | Section | Resolution |
+|-----------|--------|---------|------------|
+| `src/db/migrations/015_backup_point_sdi_summary.sql` | Y | Database migration | exists ✓ |
+| `backup_point_sdi_summary` table | Y | Database migration | created by `015_backup_point_sdi_summary.sql` ✓ |
+| Columns `backupPointId`, `issueCount`, `projectCount`, `regulations`, `createdAt` | Y | Database migration | all five columns present in migration file ✓ |
+
+---
+
+## CHANGELOG.md
+
+### Sprint 15 entry — new files
+
+| Reference | Exists | Section | Resolution |
+|-----------|--------|---------|------------|
+| `src/workload/sdi/detectors.ts` | Y | SDI detectors | exists ✓ |
+| `src/workload/sdi/scanDispatcher.ts` | Y | SDI scan dispatcher | exists ✓ |
+| `src/workload/sdi/types.ts` | Y | SDI type contracts | exists ✓ |
+| `src/routes/backup-points.ts` | Y | GET /api/backup-points/:id/sdi-teaser | exists ✓ |
+| `src/db/migrations/015_backup_point_sdi_summary.sql` | Y | Database migration | exists ✓ |
+| `src/ui/components/SdiTeaserPanel.tsx` | Y | SDI Teaser Panel UI | exists ✓ |
+
+### Sprint 15 entry — exported symbols
+
+| Reference | Exists | Location | Notes |
+|-----------|--------|---------|-------|
+| `detectEmails(buffer)` | Y | `detectors.ts` line 50 | `export function detectEmails(buffer: string): number` ✓ |
+| `detectApiKeys(buffer)` | Y | `detectors.ts` line 54 | `export function detectApiKeys(buffer: string): number` ✓ |
+| `detectCreditCards(buffer)` | Y | `detectors.ts` line 65 | `export function detectCreditCards(buffer: string): number` ✓ |
+| `detectPhones(buffer)` | Y | `detectors.ts` line 76 | `export function detectPhones(buffer: string): number` ✓ |
+| `scanFile(filePath, buffer)` | Y | `scanDispatcher.ts` line 42 | `export function scanFile(filePath: string, buffer: Buffer): ScanResult` ✓ |
+| `ScanResult { email, apiKey, cc, phone, class }` | Y | `scanDispatcher.ts` interface | field names verified ✓ |
+| `SdiRegulations` type | Y | `types.ts` line 1 | `{ gdpr: 'active' \| 'inactive'; pciDss: 'active' \| 'inactive' }` ✓ |
+| `BackupPointSdiSummary` type | Y | `types.ts` line 6 | `{ backupPointId, issueCount, projectCount, regulations }` ✓ |
+| `SdiTeaserPanel({ backupPointId })` | Y | `SdiTeaserPanel.tsx` line 47 | ✓ |
+| `buildSdiDisplay(data)` | Y | `SdiTeaserPanel.tsx` line 29 | pure helper, directly testable ✓ |
+
+### Sprint 15 entry — behaviours and log lines
+
+| Reference | Exists | Verified in |
+|-----------|--------|-------------|
+| `[sdi] scan path=<p> class=<c> email=<n> apiKey=<n> cc=<n> phone=<n>` | Y | `scanDispatcher.ts` `console.log` line 78 |
+| `[sdi] xlsx-skipped path=<p> reason=no-parser` | Y | `scanDispatcher.ts` line 52 |
+| `HIPAA chip filtered by r.code !== 'HIPAA'` | Y | `SdiTeaserPanel.tsx` line 34 |
+| `404 not_found` error when no SDI summary row | Y | `backup-points.ts` line 28 — `{ error: 'not_found' }` ✓ |
+| `regulations` always two entries: `GDPR` and `PCI_DSS` | Y | `backup-points.ts` lines 39–42 — fixed-length array ✓ |
+| GDPR activates on email or phone | Y | `backup-points.ts` reads `regs.gdpr` which is set by scanner logic ✓ |
+| PCI DSS activates on credit card | Y | `backup-points.ts` reads `regs.pciDss` which is set by scanner logic ✓ |
+
+---
+
+## DEMO.md
+
+### View SDI Teaser — Steps 1–3
+
+| Reference | Exists | Section |
+|-----------|--------|---------|
+| `https://localhost/inventory` | Y | Step 1 — route registered in `src/App.tsx` at `/inventory` ✓ |
+| `SdiTeaserPanel` component | Y | Step 1 — in `src/ui/components/SdiTeaserPanel.tsx` ✓ |
+| `http://localhost:3000/api/backup-points/${BACKUP_POINT_ID}/sdi-teaser` | Y | Step 3 — route mounted in `src/routes/backup-points.ts` ✓ |
+| `issueCount` field in API response | Y | Step 3 — returned by `handleGetSdiTeaser` ✓ |
+| `projectCount` field in API response | Y | Step 3 — returned by `handleGetSdiTeaser` ✓ |
+| `regulations[].code` / `regulations[].status` | Y | Step 3 — wire format from `backup-points.ts` ✓ |
+| `python3 -m json.tool` | Y | Step 3 — standard library tool ✓ |
+
+### View SDI Teaser — Probe 11 smoke block
+
+| Reference | Exists | Section |
+|-----------|--------|---------|
+| `npm run server` | Y | Probe 11 prerequisite comment — in `package.json` scripts ✓ |
+| `PORT` env var (with `${PORT}`) | Y | Probe 11 — documented in `.env.example` ✓ |
+| `DB_PATH` var (default `data/jira_workload.db`) | Y | Probe 11 — `data/jira_workload.db` exists on disk ✓ |
+| `backup_point_sdi_summary` table | Y | Probe 11 `INSERT OR REPLACE INTO backup_point_sdi_summary` — table created by `015_backup_point_sdi_summary.sql` ✓ |
+| Columns `backupPointId, issueCount, projectCount, regulations, createdAt` | Y | Probe 11 INSERT — all five columns match migration schema ✓ |
+| `GET /api/backup-points/:id/sdi-teaser` | Y | Probe 11 step 2/4 — `curl` call verified ✓ |
+| `tests/sdi/detectors.test.ts` | Y | Probe 11 step 4/4 — file exists at `tests/sdi/detectors.test.ts` ✓ |
+| `tests/sdi/scanDispatcher.test.ts` | Y | Probe 11 step 4/4 — file exists at `tests/sdi/scanDispatcher.test.ts` ✓ |
+| `npx vitest run tests/sdi/detectors.test.ts tests/sdi/scanDispatcher.test.ts` | Y | Probe 11 step 4/4 — vitest in devDependencies; both test files exist ✓ |
+
+All 13 DEMO.md references verified. No misses.
 
 ---
 
 ## Prior Sprint Carry-Forwards
 
-### Sprint 14 (Phase 4 Sprint 2) carry-forwards
+### Sprint 14 carry-forwards
 
-Sprint 14 reported zero open carry-forwards. All Sprint 13 P0 items were resolved in Sprint 14.
+Sprint 14 closed with zero open carry-forwards. Nothing outstanding carried into this sprint.
 
-| Item | Status |
-|---|---|
+| Sprint 14 Item | Status |
+|----------------|--------|
 | All Sprint 14 carry-forwards | None — Sprint 14 closed with no open items |
 
 ### Sprint 15 carry-forwards to Sprint 16
 
 | Item | Justification |
-|---|---|
-| None | All references verified; one in-sprint fix applied and confirmed |
+|------|---------------|
+| None | All 9 ARCHITECTURE.md discrepancies resolved in-sprint. Zero open items at close. |
+
+### Sprint-15-relevant subset of historical carry-forwards (.env, data/attachments)
+
+The task requests re-checking `.env` and `data/attachments` paths which appeared in prior
+carry-forward backlogs.
+
+| Item | Sprint 15 status |
+|------|-----------------|
+| `.env.example` — env var documentation | **Still resolved** — `DCC_ATTACHMENT_DIR` and other keys documented correctly in `.env.example`. No SDI-related env vars introduced this sprint (SDI thresholds are compile-time constants). No regression. |
+| `data/attachments/{backupPointId}/{issueKey}/{attachmentId}` disk layout | **Still resolved** — layout documented correctly in `downloadIssueAttachments.ts` and confirmed in ARCHITECTURE.md Data Flow Diagram. SDI scanner reads from this path; path references in ARCHITECTURE.md SDI section are accurate. No regression. |
 
 ---
 
 ## In-Sprint Fixes Applied
 
-| Fix | File | Change |
-|---|---|---|
-| Main Restore Flow Sequence Diagram board scope re-check | `ARCHITECTURE.md` | `Orch->>API: GET /rest/api/3/myself` → `Orch->>DB: SELECT scopes FROM credentials WHERE connectionId = ?` — matches Guard Chain sub-diagram and actual `boardScopeRecheck.ts` implementation |
+| # | Doc | Reference | Fix Applied |
+|---|-----|-----------|-------------|
+| 1 | ARCHITECTURE.md | `src/workload/sdi/SdiScanner.ts` component path | **Fixed** — replaced with three actual files: `detectors.ts`, `scanDispatcher.ts`, `types.ts`. |
+| 2 | ARCHITECTURE.md | `scanText(content, sourceType): DetectionCounts` function | **Fixed** — replaced with actual interface: `scanFile(filePath, buffer): ScanResult` in `scanDispatcher.ts`; individual `detect*` functions listed from `detectors.ts`. |
+| 3 | ARCHITECTURE.md | `DetectionCounts` interface (wrong type name) | **Fixed** — replaced with actual `ScanResult` interface from `scanDispatcher.ts`. |
+| 4 | ARCHITECTURE.md | `DetectionCounts.creditCard` field name | **Fixed** — corrected to `ScanResult.cc` throughout (Detector Definitions table, Regulation-Tag Activation Rules, Design Constraints). |
+| 5 | ARCHITECTURE.md | `SdiSourceType` type (does not exist) | **Fixed** — removed from interface section; noted internal `FileClass` type used by `scanDispatcher.ts`. |
+| 6 | ARCHITECTURE.md | `BackupPointSdiSummary.issue_count` / `project_count` (snake_case) | **Fixed** — corrected to camelCase `issueCount` / `projectCount` matching `src/workload/sdi/types.ts`. |
+| 7 | ARCHITECTURE.md | `regulations.GDPR` / `regulations.PCI_DSS` (uppercase object keys) | **Fixed** — corrected to `regulations.gdpr` / `regulations.pciDss` matching `SdiRegulations` in `types.ts`; added note explaining wire-format conversion to `[{ code, status }]` array by the route. |
+| 8 | ARCHITECTURE.md | `connectionId` required query parameter | **Fixed** — removed; Phase 1 `handleGetSdiTeaser` does not read `connectionId`; lookup is by `req.params.id` only. |
+| 9 | ARCHITECTURE.md | Error codes `sdi_summary_not_found`, `connection_not_found`, `backup_point_not_found` | **Fixed** — replaced error table with single `404 not_found` row matching actual `backup-points.ts` implementation (line 28: `res.status(404).json({ error: 'not_found' })`). |
 
 ---
 
-## Notes (Non-blocking)
+## Smoke Probe Status
 
-**`HeartbeatEvent` type gap between platform and workload boundaries:**
+| Probe | Description | Status |
+|-------|-------------|--------|
+| Probe 1 | connect-jira-site OAuth | Unchanged from Sprint 14; valid ✓ |
+| Probe 2 | manual-connection | Unchanged from Sprint 14; valid ✓ |
+| Probe 3 | stub-endpoints (objectTypes shape + policies) | Unchanged from Sprint 14; valid ✓ |
+| Probe 4 | discover-flow | Unchanged from Sprint 14; valid ✓ |
+| Probe 5 | field-context + issue-enumeration unit tests | Unchanged from Sprint 14; valid ✓ |
+| Probe 6 | Sprint 3 Phase 2 deliverables (policies rpoHours, jobs, SHA-256, changeBadge) | Unchanged from Sprint 14; valid ✓ |
+| Probe 7 | browse-protected-inventory: filter facets, search & traceability | Unchanged from Sprint 14; valid ✓ |
+| Probe 8 | restore-protected-objects: POST /api/restore-jobs + SSE phase order | Unchanged from Sprint 14; valid ✓ |
+| Probe 9 | restore-sprint2-guards: trash-check, board scope recheck & post-issue pass | Unchanged from Sprint 14; valid ✓ |
+| Probe 10 | restore-sprint3: HeartbeatEmitter + SSE wire protocol | Unchanged from previous Sprint 15; valid ✓ |
+| Probe 11 | view-sdi-teaser: SDI endpoint + unit tests | **New this sprint** — `backup_point_sdi_summary` table verified; `handleGetSdiTeaser` returns `issueCount`, `projectCount`, `regulations[]` array; `not_found` on missing row; `tests/sdi/detectors.test.ts` and `tests/sdi/scanDispatcher.test.ts` both exist; all file path references valid ✓ |
 
-- `src/platform/restore/sseEvents.ts` `HeartbeatEvent` has fields: `{ type: 'heartbeat', jobId, ts }` — no `currentPhase`.
-- `src/workload/restore/types.ts` `HeartbeatEvent` (used by `HeartbeatEmitter`) has fields: `{ type: 'heartbeat', jobId, ts, currentPhase: RestorePhase }`.
-- DEMO.md correctly shows `"currentPhase": "issue"` in the sample heartbeat payload, matching the workload type.
-- The platform boundary type is intentionally narrower (platform consumers don't need `currentPhase`). This is not a doc error but a type-system narrowing at the boundary. No fix required; noting for Phase 2 type-alignment review.
+> Note: Functional execution of probes against a running server is deferred to the
+> sprint runner environment. All referenced file paths, table columns, API routes,
+> field names, and response shapes have been verified against the current codebase.
