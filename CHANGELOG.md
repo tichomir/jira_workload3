@@ -4,6 +4,44 @@ All notable changes are documented here by sprint.
 
 ---
 
+## [Sprint Maintenance] — 2026-05-05 — README/INSTALL happy-path repair
+
+Follows only README.md and INSTALL.md from a clean checkout to confirm a new contributor
+can start the project and open the GUI in a browser. Four divergences were diagnosed and
+resolved; all acceptance criteria now pass.
+
+### Fixed
+
+#### `vite.config.ts` — dev-server proxy target corrected to port 4000
+- The Vite dev server proxy for `/api` pointed to `http://localhost:3000` (stale);
+  changed to `http://localhost:4000` to match the API server default.
+- On a clean checkout, every `/api/*` call from `npm run dev` now reaches the API server.
+
+#### `Caddyfile.compose` — all-routes reverse proxy
+- The compose Caddyfile previously proxied only `/api/*` to the `app` container.
+  Replaced with an unscoped `reverse_proxy app:4000` so all routes (including `/`) are
+  forwarded to the Express app, which now serves the built SPA for non-API paths.
+
+#### `src/server.ts` — Express serves the Vite-built SPA (committed in preceding sprint)
+- `app.use(express.static(distDir))` and a catch-all `app.get('*', ...)` were added so
+  `npm run build && npm run server` makes the frontend available at `http://localhost:4000`.
+
+### Documentation
+
+- `README.md` Quick Start — updated inline comment to "API server + frontend GUI on
+  http://localhost:4000" and added "open http://localhost:4000 in a browser" line.
+- `INSTALL.md §4 Primary path` — replaced misleading "Vite dev server is not included"
+  note with a correct statement that the Dockerfile builds the frontend at image time and
+  Express serves it; GUI available at `http://localhost:4000` or `https://localhost` (Caddy).
+- `INSTALL.md §4 Alternative` — documented the minimal single-terminal path
+  (`npm run build && npm run server` → GUI at `http://localhost:4000`) alongside the
+  existing two-terminal hot-reload path.
+
+### No new environment variables
+No new environment variables are introduced. Port 4000 and `/health` are unchanged.
+
+---
+
 ## [Sprint Maintenance] — 2026-05-05 — Restore podman-compose runtime
 
 Resolves the P0 "missing podman-compose" issue where documentation referenced a

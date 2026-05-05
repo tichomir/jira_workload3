@@ -94,10 +94,23 @@ Caddy provisions a locally-trusted TLS certificate automatically. Set
 `OAUTH_REDIRECT_URI=https://localhost/api/oauth/callback` in `.env` and register
 the same URI in the Atlassian developer console.
 
-The Vite dev server is not included in the compose stack — run `npm run dev` in a
-separate terminal if you need the UI hot-reload path.
+The Dockerfile runs `npm run build` at image build time; the Express app serves the
+compiled frontend from `dist/`. The GUI is available at **http://localhost:4000** (direct)
+or at **https://localhost** through the Caddy TLS terminator. Run `npm run dev` in a
+separate terminal only if you need UI hot-reload during development.
 
-### Alternative — two terminals (plain npm, no container)
+### Alternative — plain npm (no container)
+
+**Minimal path** — build once, then run the server (single terminal):
+
+```bash
+npm run build   # build the frontend bundle (once, or after UI changes)
+npm run server  # API server + frontend GUI on http://localhost:4000
+```
+
+Open **http://localhost:4000** in a browser for the GUI.
+
+**Hot-reload development path** — two terminals:
 
 Terminal 1: API server
 
@@ -105,13 +118,13 @@ Terminal 1: API server
 npm run server
 ```
 
-Terminal 2: Vite dev server (UI)
+Terminal 2: Vite dev server (UI hot-reload)
 
 ```bash
 npm run dev
 ```
 
-Navigate to `https://localhost` (if using Caddy) or `http://localhost:5173` (plain Vite).
+Navigate to `https://localhost` (if using Caddy) or `http://localhost:5173` (plain Vite dev server).
 
 ## 5. Verify the server is running
 

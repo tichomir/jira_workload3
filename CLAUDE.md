@@ -907,3 +907,39 @@ We need to resolve this as it basically the product doesn't work.
 - ✅ Fix: Complete end-to-end smoke test on clean checkout via podman-compose — Qa Engineer (◈ Standard, 3 SP)
 
 ---
+### Sprint Maintenance — README/INSTALL happy-path repair | 2026-05-05 | ⏳ in progress | 16 SP est.
+**Goal:** Sprint goal
+Following only README.md and INSTALL.md, a new contributor should be able to start the project and open the GUI in a browser. Find anything that breaks that path, identify the root cause, and fix it.
+
+Acceptance criteria
+Documented start command brings the stack to healthy state.
+Documented GUI URL returns the GUI (HTML 200), not 404.
+npm test and npm run build exit 0.
+Docs match reality — ports, paths, commands, branch names.
+Constraint
+No new features. No refactors. Minimal fix only.
+
+_Sprint started. Role checkpoints below will update as work completes._
+
+---
+### Sprint Maintenance — README/INSTALL happy-path repair | 2026-05-05 | ✅ done | 16 SP
+**Goal:** Sprint goal
+Following only README.md and INSTALL.md, a new contributor should be able to start the project and open the GUI in a browser. Find anything that breaks that path, identify the root cause, and fix it.
+
+Acceptance criteria
+Documented start command brings the stack to healthy state.
+Documented GUI URL returns the GUI (HTML 200), not 404.
+npm test and npm run build exit 0.
+Docs match reality — ports, paths, commands, branch names.
+Constraint
+No new features. No refactors. Minimal fix only.
+
+**Delivered:**
+- ✅ Diagnose README/INSTALL happy-path and produce error inventory — Software Architect (◈ Standard, 3 SP)
+- ✅ Fix documented start command so the stack reaches healthy state — Backend Developer (◈ Standard, 3 SP)
+- ✅ Fix documented GUI URL so it returns HTML 200 (not 404) — Backend Developer (◈ Standard, 3 SP)
+- ✅ Repair `npm test` and `npm run build` so both exit 0 — Qa Engineer (◈ Standard, 3 SP)
+- ✅ Reconcile README.md and INSTALL.md with actual ports, paths, commands, branch names — Devops Engineer (⚡ Quick, 2 SP)
+- ✅ Verify doc grounding and end-to-end happy path on clean checkout — Qa Engineer (⚡ Quick, 2 SP)
+
+---

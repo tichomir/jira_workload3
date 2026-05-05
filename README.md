@@ -7,9 +7,11 @@ Automated daily backup and point-in-time restore for Jira Cloud Issues, Projects
 ```bash
 npm install
 npm run build          # compile TypeScript + Vite bundle
-npm run server         # API server on http://localhost:4000
+npm run server         # API server + frontend GUI on http://localhost:4000
 npm run test           # run test suite
 ```
+
+After `npm run build && npm run server`, open **http://localhost:4000** in a browser for the GUI.
 
 Verify the server is healthy:
 
