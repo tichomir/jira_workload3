@@ -67,6 +67,16 @@ function createTestDb(): Database.Database {
       createdAt            TEXT    NOT NULL,
       completedAt          TEXT
     );
+    CREATE TABLE credentials (
+      connectionId TEXT PRIMARY KEY,
+      accessToken  TEXT,
+      refreshToken TEXT,
+      expiresAt    INTEGER,
+      scopes       TEXT,
+      updatedAt    TEXT,
+      clientId     TEXT,
+      clientSecret TEXT
+    );
   `);
 
   const now = new Date().toISOString();
@@ -74,6 +84,12 @@ function createTestDb(): Database.Database {
     `INSERT INTO connections (connectionId, cloudId, siteName, status, createdAt, updatedAt)
      VALUES (?, ?, 'Integration Test Site', 'active', ?, ?)`
   ).run(TEST_CONN_ID, TEST_CLOUD_ID, now, now);
+
+  db.prepare(
+    `INSERT INTO credentials (connectionId, accessToken, refreshToken, expiresAt, scopes, updatedAt)
+     VALUES (?, 'test-access-token', 'test-refresh-token', 9999999999,
+             'write:board-scope:jira-software write:board-scope.admin:jira-software', ?)`
+  ).run(TEST_CONN_ID, now);
 
   return db;
 }

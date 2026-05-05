@@ -4,6 +4,99 @@ All notable changes are documented here by sprint.
 
 ---
 
+## [Phase 4 Sprint 2] — 2026-05-05 — Restore Wizard: Pre-flight Guards, Conflict Modes & Post-Issue Pass
+
+### Added
+
+#### Board scope re-check guard — `src/workload/restore/boardScopeRecheck.ts`
+- `checkBoardScopesFromString(scopeString)` — pure function; parses a space-delimited
+  scope string and verifies both `write:board-scope:jira-software` and
+  `write:board-scope.admin:jira-software` are present. Returns `GuardResult`.
+- `checkBoardScopes(connectionId)` — reads the stored `scopes` from the `credentials`
+  table (no HTTP request; scopes are persisted at token-exchange time and updated
+  atomically on refresh). Delegates to `checkBoardScopesFromString`.
+- `REQUIRED_BOARD_SCOPES` — exported constant array of the two required scope strings.
+- Emits `[permission-probe] scope=<scope> outcome=ok|missing` log lines per scope checked.
+- Source: T2 §4.2.2, T5 §5.2.
+
+#### Trash detection guard — `src/workload/restore/trashDetectionGuard.ts`
+- `runTrashDetection(projectKeys, destination, checkTrash)` — runs the trash check for
+  each project key in the selection. Forces `destination = 'alternate'` when a project
+  is in the Atlassian 30–60 d trash window and `destination === 'original'`. Does NOT
+  halt execution (not a `job_failed` condition).
+- `extractProjectKeys(selection)` — extracts unique project keys from a mixed selection
+  array (handles Issue keys, plain project keys; skips numeric IDs).
+- `TrashChecker` — injectable function type for querying trash status (decoupled from
+  HTTP; default no-op assumes all projects are live).
+- Emits `[restore] guard=trash-detection projectKey=<key> trashed=<bool>` per project.
+- When forcing alternate: `[restore] guard=trash-detection jobId=<id> forcing destination=alternate`.
+- Source: T5 §4.2.
+
+#### Post-issue-creation pass — `src/workload/restore/postIssueCreationPass.ts`
+- `runPostIssueCreationPass(options, onEvent, deps)` — executes three sequential
+  sub-phases after all Issue bodies are written:
+  1. **Comments** — `POST /rest/api/3/issue/{id}/comment` in authored order.
+  2. **Subtask links** — `POST /rest/api/3/issueLink` (subtask direction).
+  3. **Issue links** — `POST /rest/api/3/issueLink` (all other link types).
+- Best-effort: per-item errors are logged and counted but do not halt the pass.
+- Emits `post_issue_sub_phase` SSE event after each sub-phase with `restored`, `errors`,
+  and `attempted` counts.
+- `defaultPostIssuePassDeps` — no-op injectable dependencies for stub/test use.
+- Source: T5 §5.2, §6.2b, OQ-5.
+
+#### RestoreOrchestrator — `src/workload/restore/RestoreOrchestrator.ts` (updated)
+- Board scope re-check guard wired in before the Board phase:
+  if `checkBoardScopes()` returns `passed: false`, emits `job_failed` with
+  `error.code: 'dependency_phase_failed'` and halts.
+- Trash detection guard wired in before the Project phase:
+  extracts project keys from `selection`, runs `runTrashDetection()`, forces
+  `effectiveOptions.destination = 'alternate'` when needed. Execution continues.
+- `CommentAttachmentSubtaskIssuelink` phase now wired to `runPostIssueCreationPass()`
+  instead of a stub handler. Phase emits `post_issue_sub_phase` sub-events and
+  returns `postIssuePassReport` in the phase result.
+- `RestoreRunResult.trashDetectionResults` populated from all `TrashStatus` records.
+- `RestoreRunResult.postIssuePassReport` populated from the post-issue pass.
+- Constructors accept injectable `boardScopeChecker` and `trashChecker` for hermetic tests.
+
+#### RestoreOrchestrator type contracts — `src/workload/restore/types.ts` (updated)
+- `GuardResult` — result of any pre-restore guard check (`passed`, `guardName`,
+  `failureCode`, `failureMessage`, `missingScopes`).
+- `TrashStatus` — Atlassian project trash-window state (`projectId`, `projectKey`,
+  `inTrash`, `trashedAt?`, `daysInTrash?`, `alternateLocationRequired`).
+- `PostIssuePassReport` — per-item counts from the post-issue pass (comments, attachments,
+  subtask links, issue links — restored, errors; plus `adfMediaLinkWarning` flag).
+- `PostIssueSubPhase` — `'comment' | 'subtask' | 'issuelink'`.
+- `PostIssueSubPhaseEvent` — SSE event emitted after each sub-phase; added to
+  `RestoreSseEvent` discriminated union.
+- `ConflictPauseEvent`, `ConflictResumedEvent`, `ConflictDecision`, `ConflictType` —
+  contracts for interactive `ask`-mode conflict resolution (Phase 2 execution;
+  Phase 1: `conflictMode === 'ask'` records the preference but behaves like Skip).
+- `RestoreRunResult` extended with optional `trashDetectionResults?` and
+  `postIssuePassReport?` fields.
+
+#### `GET /api/restore-jobs/trash-check` — `src/routes/restore-jobs.ts` (updated)
+- New route: `GET /api/restore-jobs/trash-check?connectionId=&projectKeys=`
+- Returns `{ trashedProjectKeys: string[] }`.
+- Stub behaviour: project keys whose uppercase form starts with `"TRASH"` are
+  classified as in the trash window.
+- `400` when `connectionId` absent; `404` when connection not found.
+- Source: T5 §4.2.
+
+#### Restore Wizard — `src/platform/ui/restore/RestoreWizard.tsx` (updated)
+- Step 3 (destination) now runs a pre-flight trash check immediately on mount.
+- `GET /api/restore-jobs/trash-check` called for all project keys extracted from
+  the current selection.
+- Yellow warning banner shown when any project is in the trash window.
+- **Original location** radio option disabled ("Unavailable — project is in
+  Atlassian native trash.") and destination forced to **Alternate location**.
+- "Checking project trash status…" spinner while the trash check is in flight.
+- The **Next →** button is disabled while the trash check is loading.
+
+### No new environment variables
+No new environment variables are introduced in this sprint.
+
+---
+
 ## [Phase 4 Sprint 1] — 2026-05-05 — Restore Wizard Foundation & Dependency-Ordered Orchestrator
 
 ### Added

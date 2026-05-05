@@ -465,3 +465,52 @@ This is sprint 1 of 3 for the phase. Plan a slice of the deliverables appropriat
 - ✅ QA: doc-grounding verification across DEMO/INSTALL/CHANGELOG/ARCHITECTURE — Qa Engineer (⚡ Quick, 2 SP)
 
 ---
+### Sprint 2 — Restore Wizard: Pre-flight Guards, Conflict Modes & Post-Issue Pass | 2026-05-05 | ⏳ in progress | 28 SP est.
+**Goal:** [Phase: Restore Wizard & Dependency-Ordered Restore Flow — Sprint 2 of 3]
+Deliver the operator-facing Restore wizard exercising the restore engine end-to-end. Enforces the hard write-dependency chain, supports three conflict modes and three destinations (excluding cross-site/cross-tenant and blob export), and emits SSE phase events. This is the restore-protected-objects operator flow.
+
+Deliverables (across all sprints in this phase):
+- Restore wizard UI with conflict modes (Override, Skip default, Ask per conflict)
+- Destination selector: Original location, Alternate location (same Jira site), Export/Browser Download — cross-site/cross-tenant explicitly blocked
+- Restore orchestrator enforcing dependency chain: site-reference-data → project → workflow → custom-field → board → sprint → issue → comment/attachment/subtask/issuelink
+- SSE phase event stream emitting events strictly in dependency order with job_failed { error.code: 'dependency_phase_failed', phase: <name> } on failure
+- Pre-restore scope re-check including both write:board-scope variants before Board phase begins
+- Atlassian native trash detection: in-place restore blocked for projects in 30–60d trash, alternate-location path forced
+- Best-effort warning in restore report for ADF media-link rewrite gaps post attachment-restore
+- Restore job progress events ≤10s heartbeat, stalled alert at >20s, 'Completed with N errors' semantics
+- Comments, subtasks, issue links restored in post-issue-creation pass with counts in restore report
+
+This is sprint 2 of 3 for the phase. Plan a slice of the deliverables appropriate for one sprint; remaining items will be picked up in subsequent sprints via the auto-extracted Carry-Forward Backlog.
+
+_Sprint started. Role checkpoints below will update as work completes._
+
+---
+### Sprint 2 — Restore Wizard: Pre-flight Guards, Conflict Modes & Post-Issue Pass | 2026-05-05 | 📋 reviewing | 28 SP
+**Goal:** [Phase: Restore Wizard & Dependency-Ordered Restore Flow — Sprint 2 of 3]
+Deliver the operator-facing Restore wizard exercising the restore engine end-to-end. Enforces the hard write-dependency chain, supports three conflict modes and three destinations (excluding cross-site/cross-tenant and blob export), and emits SSE phase events. This is the restore-protected-objects operator flow.
+
+Deliverables (across all sprints in this phase):
+- Restore wizard UI with conflict modes (Override, Skip default, Ask per conflict)
+- Destination selector: Original location, Alternate location (same Jira site), Export/Browser Download — cross-site/cross-tenant explicitly blocked
+- Restore orchestrator enforcing dependency chain: site-reference-data → project → workflow → custom-field → board → sprint → issue → comment/attachment/subtask/issuelink
+- SSE phase event stream emitting events strictly in dependency order with job_failed { error.code: 'dependency_phase_failed', phase: <name> } on failure
+- Pre-restore scope re-check including both write:board-scope variants before Board phase begins
+- Atlassian native trash detection: in-place restore blocked for projects in 30–60d trash, alternate-location path forced
+- Best-effort warning in restore report for ADF media-link rewrite gaps post attachment-restore
+- Restore job progress events ≤10s heartbeat, stalled alert at >20s, 'Completed with N errors' semantics
+- Comments, subtasks, issue links restored in post-issue-creation pass with counts in restore report
+
+This is sprint 2 of 3 for the phase. Plan a slice of the deliverables appropriate for one sprint; remaining items will be picked up in subsequent sprints via the auto-extracted Carry-Forward Backlog.
+
+**Delivered:**
+- ✅ Design pre-restore guard sequence and post-issue-pass contract — Software Architect (◈ Standard, 3 SP)
+- ✅ Implement pre-restore scope re-check for both write:board-scope variants — Backend Developer (◈ Standard, 3 SP)
+- ✅ Implement Atlassian native trash detection forcing alternate-location restore — Backend Developer (◈ Standard, 3 SP)
+- ✅ Implement post-issue-creation pass for comments, subtasks, and issuelinks — Backend Developer (◉ Deep, 5 SP)
+- ✅ Build Restore wizard UI: conflict modes + destination selector — Frontend Developer (◉ Deep, 5 SP)
+- ✅ QA: end-to-end restore flow tests for guards and post-issue pass — Qa Engineer (◈ Standard, 3 SP)
+- ✅ Update DEMO.md with restore wizard walkthrough — Frontend Developer (⚡ Quick, 2 SP)
+- ✅ Update CHANGELOG.md and INSTALL.md for restore wizard release — Devops Engineer (⚡ Quick, 2 SP)
+- ✅ Doc-grounding verification across canonical docs — Qa Engineer (⚡ Quick, 2 SP)
+
+---

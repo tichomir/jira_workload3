@@ -220,7 +220,61 @@ export function handleGetJobEvents(req: Request, res: Response): void {
   req.on('close', cleanup);
 }
 
+/**
+ * GET /api/restore-jobs/trash-check
+ *
+ * Pre-flight trash status check for a set of project keys before job creation.
+ * Returns which project keys are currently in the Atlassian-managed trash window
+ * so the wizard can force alternate-location restore and show an inline notice.
+ *
+ * Stub behaviour: any project key whose uppercase form starts with "TRASH" is
+ * treated as in the Atlassian trash window. A real implementation would call
+ * GET /rest/api/3/project/{projectIdOrKey} and inspect project.archived / project.deleted.
+ *
+ * Query params:
+ *   connectionId  (required) — the active connection
+ *   projectKeys   (required) — comma-separated project keys, e.g. "PROJ,ABC"
+ *
+ * Response 200: { trashedProjectKeys: string[] }
+ * Source: T5 §4.2
+ */
+export function handleTrashCheck(req: Request, res: Response): void {
+  const connectionId =
+    typeof req.query['connectionId'] === 'string' ? req.query['connectionId'] : '';
+  const projectKeysRaw =
+    typeof req.query['projectKeys'] === 'string' ? req.query['projectKeys'] : '';
+
+  if (!connectionId) {
+    res
+      .status(400)
+      .json({ error: 'missing_required_fields', message: 'connectionId is required' });
+    return;
+  }
+
+  const db = getDb();
+  const conn = db
+    .prepare('SELECT connectionId FROM connections WHERE connectionId = ?')
+    .get(connectionId);
+  if (!conn) {
+    res.status(404).json({
+      error: 'connection_not_found',
+      message: `No connection found with id ${connectionId}`,
+    });
+    return;
+  }
+
+  const projectKeys = projectKeysRaw
+    ? projectKeysRaw.split(',').map((k) => k.trim()).filter(Boolean)
+    : [];
+
+  // Stub: keys whose uppercase form starts with "TRASH" are in the trash window.
+  const trashedProjectKeys = projectKeys.filter((k) => k.toUpperCase().startsWith('TRASH'));
+
+  res.json({ trashedProjectKeys });
+}
+
 const router = Router();
+router.get('/trash-check', handleTrashCheck);
 router.post('/', handleCreateRestoreJob);
 router.get('/:id/events', handleGetJobEvents);
 

@@ -37,6 +37,16 @@ function createTestDb(): Database.Database {
       createdAt            TEXT    NOT NULL,
       completedAt          TEXT
     );
+    CREATE TABLE credentials (
+      connectionId TEXT PRIMARY KEY,
+      accessToken  TEXT,
+      refreshToken TEXT,
+      expiresAt    INTEGER,
+      scopes       TEXT,
+      updatedAt    TEXT,
+      clientId     TEXT,
+      clientSecret TEXT
+    );
   `);
   return db;
 }
@@ -67,6 +77,11 @@ function seedConnection(db: Database.Database, overrides: { cloudId?: string } =
     `INSERT INTO connections (connectionId, cloudId, siteName, status, createdAt, updatedAt)
      VALUES (?, ?, ?, 'active', ?, ?)`
   ).run(TEST_CONN_ID, overrides.cloudId ?? TEST_CLOUD_ID, 'Test Site', now, now);
+  db.prepare(
+    `INSERT INTO credentials (connectionId, accessToken, refreshToken, expiresAt, scopes, updatedAt)
+     VALUES (?, 'test-access-token', 'test-refresh-token', 9999999999,
+             'write:board-scope:jira-software write:board-scope.admin:jira-software', ?)`
+  ).run(TEST_CONN_ID, now);
 }
 
 function validBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {

@@ -235,19 +235,290 @@ export interface JobCompletedEvent extends RestoreSseEventBase {
   restoredCount: number;
 }
 
+// ---------------------------------------------------------------------------
+// Post-Issue-Creation Pass — sub-phase SSE events
+// ---------------------------------------------------------------------------
+
+/** The three sequential sub-phases within the post-issue-creation pass. */
+export type PostIssueSubPhase = 'comment' | 'subtask' | 'issuelink';
+
+/**
+ * Emitted once per sub-phase within the comment-attachment-subtask-issuelink
+ * phase, after that sub-phase finishes processing all items.
+ *
+ * Ordering guarantee: comment event precedes subtask, subtask precedes
+ * issuelink. All three appear after the phase_completed event for the Issue
+ * phase and inside the phase_started / phase_completed envelope of the
+ * CommentAttachmentSubtaskIssuelink phase.
+ */
+export interface PostIssueSubPhaseEvent extends RestoreSseEventBase {
+  type: 'post_issue_sub_phase';
+  /** Which sub-phase within the post-issue pass completed. */
+  subPhase: PostIssueSubPhase;
+  /** Items successfully restored in this sub-phase. */
+  restored: number;
+  /** Item-level errors in this sub-phase. */
+  errors: number;
+  /** Total items attempted in this sub-phase. */
+  attempted: number;
+}
+
 /**
  * Discriminated union of all restore SSE event types.
  *
  * Events are always emitted in phase order; no event is ever emitted out of
  * the sequence defined by RESTORE_PHASE_ORDER. The stream always ends with
  * either job_failed or job_completed.
+ *
+ * When conflictMode === 'ask', the stream may include conflict_pause /
+ * conflict_resumed pairs mid-phase. The stream remains open during the pause;
+ * execution is blocked until the operator submits a ConflictDecision via
+ * POST /api/restore-jobs/{id}/conflict-decision.
  */
 export type RestoreSseEvent =
   | PhaseStartedEvent
   | PhaseCompletedEvent
   | PhaseProgressEvent
   | JobFailedEvent
-  | JobCompletedEvent;
+  | JobCompletedEvent
+  | ConflictPauseEvent
+  | ConflictResumedEvent
+  | PostIssueSubPhaseEvent;
+
+// ---------------------------------------------------------------------------
+// Pre-Restore Guard Contracts
+// ---------------------------------------------------------------------------
+
+/**
+ * Identifies which pre-restore guard produced a result.
+ *
+ * 'board-scope-recheck' — verifies write:board-scope:jira-software AND
+ *   write:board-scope.admin:jira-software are present in the token's scope
+ *   list before the Board phase begins.
+ *
+ * 'trash-detection' — checks each selected project's Atlassian trash status
+ *   during the Project phase. Forces alternate-location when a project is in
+ *   the 30–60 d trash window and destination === 'original'.
+ */
+export type RestoreGuardName = 'board-scope-recheck' | 'trash-detection';
+
+/**
+ * Result of a pre-restore guard check.
+ *
+ * passed:          true when the guard condition is satisfied; the phase proceeds.
+ * guardName:       identifies which guard produced this result.
+ * failureCode:     machine-readable code set when passed === false.
+ *   'scope_missing'    — one or more required board scopes absent from the token.
+ *   'project_in_trash' — project is in Atlassian native trash AND destination
+ *                        === 'original'. NOT a fatal failure; forces alternate-location.
+ * failureMessage:  human-readable explanation for the operator; present when
+ *                  passed === false.
+ * missingScopes:   (board-scope-recheck only) exact scope strings absent from
+ *                  the token. Always contains at least one entry when
+ *                  failureCode === 'scope_missing'.
+ *
+ * NOTE: 'board-scope-recheck' with passed === false triggers job_failed and
+ * halts execution. 'trash-detection' with passed === false forces
+ * alternate-location but does NOT halt execution.
+ */
+export interface GuardResult {
+  passed: boolean;
+  guardName: RestoreGuardName;
+  failureCode?: 'scope_missing' | 'project_in_trash';
+  failureMessage?: string;
+  missingScopes?: string[];
+}
+
+/**
+ * Atlassian native trash-window status for a project.
+ *
+ * Atlassian manages a 60-day project trash window. A project can be either
+ * live (inTrash: false) or in the trash (inTrash: true, daysInTrash 1–60).
+ *
+ * When inTrash === true AND destination === 'original':
+ *   - In-place restore is BLOCKED.
+ *   - The orchestrator MUST force destination === 'alternate' (same site).
+ *   - A diagnostic is written to RestoreRunResult.trashDetectionResults[].
+ *   - Execution continues (not a job_failed condition).
+ *
+ * Restoring from the Atlassian trash UI is out of scope in Phase 1 (T5 §4.2,
+ * CLAUDE.md Non-Goals).
+ *
+ * Source: T5 §4.2.
+ */
+export interface TrashStatus {
+  /** Atlassian numeric project ID (string form). */
+  projectId: string;
+  /** Jira project key, e.g. "PROJ". */
+  projectKey: string;
+  /** true when the project is in the Atlassian-managed trash. */
+  inTrash: boolean;
+  /** ISO-8601 timestamp when the project was moved to trash. Present when inTrash === true. */
+  trashedAt?: string;
+  /**
+   * Days the project has been in trash (1–60). Present when inTrash === true.
+   * At 61 days Atlassian permanently deletes the project; only 1–60 is observable.
+   */
+  daysInTrash?: number;
+  /**
+   * true when inTrash === true AND the restore destination was 'original'.
+   * The orchestrator reads this flag to decide whether to force alternate-location.
+   */
+  alternateLocationRequired: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Post-Issue-Creation Pass Contract
+// ---------------------------------------------------------------------------
+
+/**
+ * Counts produced by the comment-attachment-subtask-issuelink phase.
+ *
+ * Present in RestoreRunResult.postIssuePassReport after the phase completes.
+ * All counts are per-item (comment, attachment, link), not per-issue.
+ *
+ * Ordering within the pass (per issue, strictly sequential):
+ *   1. Comments   — POST /rest/api/3/issue/{id}/comment (preserves authored order)
+ *   2. Attachments — POST /rest/api/3/issue/{id}/attachments (multipart upload)
+ *   3. Subtask links — POST /rest/api/3/issueLink (type=subtask, inward direction)
+ *   4. Issue links  — POST /rest/api/3/issueLink (all other link types)
+ *
+ * An error in any individual item is recorded and counted; it does NOT halt
+ * the pass. The pass continues with the next item. Total errors accumulate in
+ * RestoreRunResult.errorCount (T5 §6.2b).
+ *
+ * adfMediaLinkWarning is true when ≥1 restored attachment received a new
+ * Atlassian-assigned attachmentId (i.e. the ID differs from the backed-up ID).
+ * When true, ADF media node references in Issue descriptions and comments may
+ * be broken. Full rewrite is a Phase 2 item (T5 OQ-5).
+ *
+ * Source: T5 §5.2, §6.2b, OQ-5.
+ */
+export interface PostIssuePassReport {
+  /** Comments successfully written via POST /rest/api/3/issue/{id}/comment. */
+  commentsRestored: number;
+  /** Comment-level errors (per comment, not per issue). */
+  commentErrors: number;
+  /** Attachments successfully uploaded via POST /rest/api/3/issue/{id}/attachments. */
+  attachmentsRestored: number;
+  /** Attachment-level errors (per attachment). */
+  attachmentErrors: number;
+  /** Subtask linkages successfully created via POST /rest/api/3/issueLink. */
+  subtaskLinksRestored: number;
+  /** Subtask link errors. */
+  subtaskLinkErrors: number;
+  /** Issue links (non-subtask) successfully created via POST /rest/api/3/issueLink. */
+  issueLinksRestored: number;
+  /** Issue-link errors. */
+  issueLinkErrors: number;
+  /**
+   * true when ≥1 restored attachment received a new Atlassian-assigned attachmentId.
+   * Triggers best-effort ADF media-link warning in the restore report (T5 OQ-5).
+   */
+  adfMediaLinkWarning: boolean;
+  /**
+   * Issue keys where at least one attachment ID changed post-restore.
+   * Populated when adfMediaLinkWarning === true; empty array otherwise.
+   */
+  adfMediaLinkAffectedIssueKeys: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Conflict Mode — 'ask' per-conflict SSE Events and Decision Contract
+// ---------------------------------------------------------------------------
+
+/**
+ * Conflict kinds that can trigger a pause event in conflictMode === 'ask'.
+ *
+ * 'item_exists'    — an Issue with the same key already exists on the target site.
+ * 'project_exists' — a Project with the same key already exists.
+ * 'board_exists'   — a Board with the same name already exists in the target project.
+ * 'sprint_exists'  — a Sprint with the same name already exists on the target board.
+ */
+export type ConflictType =
+  | 'item_exists'
+  | 'project_exists'
+  | 'board_exists'
+  | 'sprint_exists';
+
+/**
+ * SSE event emitted when conflictMode === 'ask' and the orchestrator
+ * detects a conflict on the target Jira site.
+ *
+ * On emit, the orchestrator BLOCKS execution for the conflicting item and
+ * awaits a ConflictDecision delivered via
+ * POST /api/restore-jobs/{id}/conflict-decision.
+ *
+ * The SSE stream does NOT close during the pause — the client must remain
+ * connected to receive the subsequent conflict_resumed event.
+ *
+ * Event ordering: always emitted inside the phase_started / phase_completed
+ * envelope of the current phase. Never emitted after phase_completed.
+ */
+export interface ConflictPauseEvent extends RestoreSseEventBase {
+  type: 'conflict_pause';
+  /** UUID identifying this conflict instance. Referenced by ConflictDecision.conflictId. */
+  conflictId: string;
+  /** Phase in which the conflict was detected. */
+  phase: RestorePhase;
+  /** ID of the item with the conflict (Issue key, project ID, board ID, sprint ID). */
+  itemId: string;
+  /** Structured kind of conflict — drives the UI conflict resolution dialog. */
+  conflictType: ConflictType;
+  /**
+   * Lightweight snapshot of the existing item on the Jira site.
+   * Shape is type-specific; not schema-bound — used for operator display only.
+   * Example for 'item_exists': { key: "PROJ-42", summary: "...", status: "Done" }
+   */
+  existingItemSummary: Record<string, unknown>;
+}
+
+/**
+ * SSE event emitted after a ConflictDecision is received and applied.
+ *
+ * Always follows a conflict_pause event with the same conflictId.
+ * After this event the orchestrator resumes normal phase execution.
+ */
+export interface ConflictResumedEvent extends RestoreSseEventBase {
+  type: 'conflict_resumed';
+  /** UUID matching the corresponding conflict_pause event. */
+  conflictId: string;
+  /** Phase in which the conflict was resolved. */
+  phase: RestorePhase;
+  /** Item ID that was involved in the conflict. */
+  itemId: string;
+  /** The decision applied by the orchestrator. */
+  decision: 'override' | 'skip';
+}
+
+/**
+ * Operator-supplied decision resolving a conflict_pause event.
+ *
+ * Submitted via POST /api/restore-jobs/{id}/conflict-decision.
+ * The route handler delivers this to the orchestrator, which awaits a
+ * Promise keyed on conflictId before resuming.
+ *
+ * decision:   'override' — overwrite the existing item on the Jira site.
+ *             'skip'     — leave the existing item untouched; move to next.
+ * applyToAll: when true, all subsequent conflicts of the same conflictType
+ *             in this restore job use the same decision without pausing.
+ *             No further conflict_pause events are emitted for those conflicts.
+ */
+export interface ConflictDecision {
+  /** UUID matching ConflictPauseEvent.conflictId. */
+  conflictId: string;
+  /** Item ID that has the conflict — echoed for validation. */
+  itemId: string;
+  /** Operator's chosen resolution. */
+  decision: 'override' | 'skip';
+  /** ISO-8601 timestamp when the operator submitted the decision. */
+  decidedAt: string;
+  /**
+   * When true, applies this decision to all remaining conflicts of the same
+   * conflictType. No further conflict_pause events are emitted for those items.
+   */
+  applyToAll: boolean;
+}
 
 // ---------------------------------------------------------------------------
 // Restore Orchestrator Interface
@@ -296,6 +567,19 @@ export interface RestoreRunResult {
    * executed. Format: "<phase-name> phase: <reason>". Source: T5 §5.2.
    */
   phaseDiagnostic?: string;
+  /**
+   * One entry per project found in Atlassian's native trash during the Project
+   * phase. Present (non-empty) when ≥1 selected project was in the trash window
+   * and forced to alternate-location restore. Absent when trash detection found
+   * no trashed projects.
+   */
+  trashDetectionResults?: TrashStatus[];
+  /**
+   * Detailed counts from the comment-attachment-subtask-issuelink phase.
+   * Present after that phase completes (may be absent when a prior phase failed
+   * before the post-issue pass was reached).
+   */
+  postIssuePassReport?: PostIssuePassReport;
 }
 
 /**

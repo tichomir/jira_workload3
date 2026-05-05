@@ -1359,9 +1359,11 @@ restore job after resolving the blocking condition.
 ### Special Cases
 
 **Pre-restore scope re-check (Board phase):** Before the Board phase begins, the
-orchestrator calls `GET /rest/api/3/myself` and verifies that both
+orchestrator reads the stored `scopes` column from the `credentials` table for
+the active connection (no additional HTTP request) and verifies that both
 `write:board-scope:jira-software` and `write:board-scope.admin:jira-software`
-are present in the token's scope list. If either is missing, a `job_failed`
+are present. Scopes are persisted at token-exchange time and updated atomically
+on every refresh via `JiraHttpClient`. If either scope is missing, a `job_failed`
 event is emitted with `phase: 'board'` and execution halts. The UI surfaces a
 403 remediation banner explaining which scope is missing.
 
@@ -1415,7 +1417,10 @@ type RestoreSseEvent =
   | PhaseCompletedEvent              // type: 'phase_completed'
   | PhaseProgressEvent               // type: 'phase_progress'
   | JobFailedEvent                   // type: 'job_failed'
-  | JobCompletedEvent;               // type: 'job_completed'
+  | JobCompletedEvent                // type: 'job_completed'
+  | ConflictPauseEvent               // type: 'conflict_pause'    (conflictMode==='ask')
+  | ConflictResumedEvent             // type: 'conflict_resumed'  (conflictMode==='ask')
+  | PostIssueSubPhaseEvent;          // type: 'post_issue_sub_phase'
 ```
 
 **`job_failed` event shape** (T5 §5.2):
@@ -1455,13 +1460,12 @@ Initiates a restore job against the full dependency-ordered restore orchestrator
 
 ```json
 {
-  "connectionId":  "550e8400-...",
-  "backupPointId": "bp-20260504-...",
-  "selection":     ["PROJ-1", "PROJ-2"],
-  "conflictMode":  "skip",
-  "destination": {
-    "type": "original"
-  }
+  "connectionId":        "550e8400-...",
+  "backupPointId":       "bp-20260504-...",
+  "selection":           ["PROJ-1", "PROJ-2"],
+  "conflictMode":        "skip",
+  "destination":         "original",
+  "alternateDestination": null
 }
 ```
 
@@ -1471,23 +1475,27 @@ Initiates a restore job against the full dependency-ordered restore orchestrator
 | `backupPointId` | Yes | — | UUID of the backup point to restore from |
 | `selection` | Yes | — | Array of item IDs to restore (Issue keys, project IDs, etc.) |
 | `conflictMode` | No | `"skip"` | `"override"` \| `"skip"` \| `"ask"`. Source: T5 §5.1 |
-| `destination` | No | `{ type: "original" }` | Destination descriptor. See below. |
+| `destination` | Yes | — | `"original"` \| `"alternate"` \| `"export"`. Plain string — not a nested object. |
+| `alternateDestination` | No | `null` | Required when `destination === "alternate"`. `{ "cloudId": "...", "projectKey": "..." }` |
 
-**Destination variants:**
+**Destination values:**
+
+- `"original"` — restore to the original Jira project (blocked when project is in native trash).
+- `"alternate"` — restore to a different project on the same site; `alternateDestination` must be provided.
+- `"export"` — export/browser download (no live write to Jira).
+
+**Alternate destination example:**
 
 ```json
-{ "type": "original" }
-```
-```json
-{ "type": "alternate", "cloudId": "a1b2...", "projectKey": "BACKUP" }
-```
-```json
-{ "type": "export" }
+{
+  "destination":         "alternate",
+  "alternateDestination": { "cloudId": "a1b2...", "projectKey": "BACKUP" }
+}
 ```
 
-Cross-site restore (`cloudId` differs from the connected site) is explicitly
-blocked in Phase 1 (T5 §5.2). The server returns `400 cross_site_not_supported`
-if the `alternate.cloudId` does not match the connection's `cloudId`.
+Cross-site restore (`alternateDestination.cloudId` differs from the connected site's `cloudId`)
+is explicitly blocked in Phase 1 (T5 §5.2). The server returns
+`400 cross_site_restore_not_supported` in that case.
 
 **Success response (201):**
 
@@ -1503,9 +1511,10 @@ if the `alternate.cloudId` does not match the connection's `cloudId`.
 | Status | `error` field | Meaning |
 |--------|--------------|---------|
 | `400` | `missing_required_fields` | Required body fields absent |
-| `400` | `cross_site_not_supported` | `alternate.cloudId` differs from connection cloudId |
+| `400` | `invalid_conflict_mode` | `conflictMode` is not a valid value |
+| `400` | `invalid_destination` | `destination` is not a valid value |
+| `400` | `cross_site_restore_not_supported` | `alternateDestination.cloudId` differs from connection cloudId |
 | `404` | `connection_not_found` | No connection matches `connectionId` |
-| `404` | `backup_point_not_found` | No backup point matches `backupPointId` for this connection |
 
 ---
 
@@ -1549,6 +1558,437 @@ for phase N-1. The stream always ends with exactly one terminal event:
 
 ---
 
+### GET /api/restore-jobs/trash-check
+
+Pre-flight check for Atlassian-managed project trash status. The Restore Wizard
+calls this endpoint when entering Step 3 (destination selection) to determine
+whether any selected project is in the 60-day native trash window. If any project
+is trashed, the wizard forces `destination: "alternate"` and shows a warning banner.
+
+**Query parameters:**
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `connectionId` | Yes | The `connectionId` of the active connection |
+| `projectKeys` | Yes | Comma-separated project keys, e.g. `"PROJ,ABC"` |
+
+**Success response (200):**
+
+```json
+{ "trashedProjectKeys": ["PROJ"] }
+```
+
+`trashedProjectKeys` is an empty array when no selected project is in trash.
+
+**Stub behaviour:** Any project key whose uppercase form starts with `"TRASH"` is
+treated as in the trash window. A real implementation would call
+`GET /rest/api/3/project/{projectIdOrKey}` and inspect `project.archived` /
+`project.deleted`.
+
+**Error responses:**
+
+| Status | `error` field | Meaning |
+|--------|--------------|---------|
+| `400` | `missing_required_fields` | `connectionId` query parameter absent |
+| `404` | `connection_not_found` | No connection matches the supplied `connectionId` |
+
+---
+
+## Restore Phase Chain — Guards, Conflict Modes & Post-Issue Pass
+
+### Overview
+
+This section formalises three behavioral contracts that the Restore Subsystem
+must enforce beyond the basic phase ordering documented above:
+
+1. **Pre-restore guard chain** — two guards fire at defined points in the phase
+   sequence. Each guard either permits the phase to continue, halts the job
+   (`job_failed`), or silently reroutes execution (trash detection).
+
+2. **Conflict-mode semantics** — concrete rules for all three modes (Override,
+   Skip, Ask), including the full SSE event taxonomy for the interactive `ask`
+   mode and its companion HTTP endpoint.
+
+3. **Post-issue-creation pass** — the `comment-attachment-subtask-issuelink`
+   phase ordering, per-item error semantics, and the `PostIssuePassReport`
+   counts surfaced in the restore report.
+
+### Shared Types File
+
+All contracts defined in this section are declared in:
+
+```
+src/workload/restore/types.ts
+```
+
+New interfaces (added in Phase 4 Sprint 2):
+
+| Interface | Purpose |
+|-----------|---------|
+| `GuardResult` | Result of any pre-restore guard check |
+| `TrashStatus` | Atlassian project trash-window state |
+| `PostIssuePassReport` | Per-item counts from the post-issue pass |
+| `ConflictDecision` | Operator resolution for an `ask`-mode conflict |
+| `ConflictPauseEvent` | SSE event pausing the stream on a conflict |
+| `ConflictResumedEvent` | SSE event resuming after a conflict decision |
+
+`RestoreSseEvent` is extended to include `ConflictPauseEvent | ConflictResumedEvent`.
+`RestoreRunResult` gains two optional fields: `trashDetectionResults?: TrashStatus[]`
+and `postIssuePassReport?: PostIssuePassReport`.
+
+---
+
+### Pre-Restore Guard Chain
+
+Two guards fire at specific, fixed points in the restore phase sequence. Guards
+are implemented as pure functions returning `GuardResult` and are injected into
+the orchestrator at the phase-dispatch boundary.
+
+#### Guard 1 — Trash Detection (Project Phase)
+
+**When:** At the start of the Project phase, before any project write.
+Fires once per selected project.
+
+**What it checks:** Whether the project is in Atlassian's 60-day native trash
+window.
+
+**How it checks:** The orchestrator calls the Jira project-trash API for each
+selected project and maps the response to a `TrashStatus` record.
+
+**Outcomes:**
+
+| Condition | Action |
+|-----------|--------|
+| `inTrash === false` | `GuardResult { passed: true }` — proceed with in-place write |
+| `inTrash === true` AND `destination === 'original'` | `GuardResult { passed: false, failureCode: 'project_in_trash' }` — force `destination = 'alternate'`; add `TrashStatus` to `trashDetectionResults[]`; **continue execution** (not a `job_failed`) |
+| `inTrash === true` AND `destination !== 'original'` | `GuardResult { passed: true }` — destination already avoids in-place restore; proceed normally |
+
+Trash detection is **not a halting failure**. The orchestrator silently routes
+the project to alternate-location restore and continues. Operators see the
+rerouted project listed in `RestoreRunResult.trashDetectionResults`.
+
+The Phase 1 restriction (T5 §4.2): restoring from Atlassian's native trash UI
+is out of scope. Projects in the trash window must use `destination: 'alternate'`.
+
+#### Guard 2 — Board Scope Re-Check (Before Board Phase)
+
+**When:** Immediately before the Board phase begins. Fires exactly once per
+restore job, regardless of how many boards are in scope.
+
+**What it checks:** Both board-write scopes are present in the current token:
+- `write:board-scope:jira-software`
+- `write:board-scope.admin:jira-software`
+
+**How it checks:** Reads the `scopes` column from the `credentials` table for the
+active `connectionId` (no HTTP request). Scopes are persisted at token-exchange
+time and updated atomically on every token refresh. The guard parses the
+space-delimited scope string and checks that both scope strings are present.
+
+**Outcomes:**
+
+| Condition | Action |
+|-----------|--------|
+| Both scopes present | `GuardResult { passed: true }` — Board phase proceeds |
+| Either scope missing | `GuardResult { passed: false, failureCode: 'scope_missing', missingScopes: ['...'] }` — emit `job_failed`; halt execution |
+
+When the guard fails, the orchestrator:
+1. Emits `job_failed { error: { code: 'dependency_phase_failed', phase: 'board', message: '...' } }`
+2. Updates the DB: `status = 'failed'`, `phaseDiagnostic = 'board scope missing: [...]'`
+3. Closes the SSE stream
+4. Sprint, Issue, and post-issue phases are never started
+
+The UI surfaces a 403 remediation banner listing the missing scopes when this
+failure is detected.
+
+---
+
+### Conflict Mode Semantics
+
+The `conflictMode` field on `POST /api/restore-jobs` controls how the
+orchestrator handles items that already exist on the target Jira site.
+
+#### Override
+
+The orchestrator unconditionally overwrites the existing item. No pause, no
+operator interaction. Issues are updated via `PUT /rest/api/3/issue/{id}`;
+projects are updated via `PUT /rest/api/3/project/{id}`.
+
+#### Skip (default)
+
+When an item already exists, the orchestrator records a skip (logged but not
+counted as an error) and moves to the next item. `restoredCount` is not
+incremented for skipped items.
+
+#### Ask per Conflict
+
+When an item conflict is detected:
+
+1. The orchestrator **pauses execution for that item**.
+2. A `conflict_pause` SSE event is emitted to the client.
+3. The SSE stream remains open (the client stays connected).
+4. The orchestrator awaits a `ConflictDecision` delivered by the client via
+   `POST /api/restore-jobs/{id}/conflict-decision`.
+5. On receipt of the decision, a `conflict_resumed` SSE event is emitted.
+6. The orchestrator applies the decision and continues to the next item.
+
+Execution of the current phase is paused only for the conflicting item. All
+other items in the selection queue are deferred until the decision arrives.
+The `MAX_HEARTBEAT_INTERVAL_MS` (10 s) / `STALLED_THRESHOLD_MS` (20 s)
+constants do not apply during a conflict pause — the stalled-alert timer is
+suspended while the orchestrator is awaiting a decision.
+
+**`applyToAll` shortcut:** When `ConflictDecision.applyToAll === true`, the
+orchestrator caches the decision against the `conflictType` and applies it
+to all subsequent conflicts of the same type without pausing. No further
+`conflict_pause` events are emitted for those conflicts.
+
+#### SSE Event Taxonomy for 'ask' Mode
+
+New event types introduced in Phase 4 Sprint 2 (defined in
+`src/workload/restore/types.ts`):
+
+**`conflict_pause` event:**
+
+```typescript
+interface ConflictPauseEvent extends RestoreSseEventBase {
+  type: 'conflict_pause';
+  conflictId: string;               // UUID — referenced in decision POST body
+  phase: RestorePhase;
+  itemId: string;                   // Issue key, project ID, etc.
+  conflictType: ConflictType;       // 'item_exists' | 'project_exists' | ...
+  existingItemSummary: Record<string, unknown>;  // display-only snapshot
+}
+```
+
+**`conflict_resumed` event:**
+
+```typescript
+interface ConflictResumedEvent extends RestoreSseEventBase {
+  type: 'conflict_resumed';
+  conflictId: string;
+  phase: RestorePhase;
+  itemId: string;
+  decision: 'override' | 'skip';
+}
+```
+
+#### Conflict Decision Endpoint (implementer-owned for this sprint)
+
+```
+POST /api/restore-jobs/{id}/conflict-decision
+```
+
+**Request body:**
+
+```json
+{
+  "conflictId": "cf-7a3b...",
+  "itemId":     "PROJ-42",
+  "decision":   "override",
+  "decidedAt":  "2026-05-05T10:12:34Z",
+  "applyToAll": false
+}
+```
+
+**Response:** `202 Accepted` (no body).
+
+**Error responses:**
+
+| Status | `error` field | Meaning |
+|--------|--------------|---------|
+| `404` | `restore_job_not_found` | No restore job matches `{id}` |
+| `404` | `conflict_not_found` | No pending conflict matches `conflictId` |
+| `400` | `invalid_decision` | `decision` is not `'override'` or `'skip'` |
+
+**Implementation note (implementer-owned):** The route handler resolves a
+`Promise` registered by the orchestrator in an in-memory `Map<conflictId, resolver>`.
+The orchestrator registers the resolver before emitting `conflict_pause` and
+awaits the Promise to block the phase loop. The route handler deletes the
+resolver entry after calling it to prevent double-resolution.
+
+---
+
+### Post-Issue-Creation Pass Contract
+
+The `comment-attachment-subtask-issuelink` phase restores all per-issue
+secondary data after every Issue shell has been written. This ordering avoids
+forward-reference failures when issue links point to issues that had not yet
+been created.
+
+#### Item Ordering Within the Pass (per Issue, strictly sequential)
+
+```
+For each restored Issue (in the order Issues were restored in the Issue phase):
+  1. Comments    — POST /rest/api/3/issue/{id}/comment
+                   Restored in authored chronological order (oldest first).
+  2. Attachments — POST /rest/api/3/issue/{id}/attachments
+                   Each attachment is individually uploaded (multipart/form-data).
+                   SHA-256 is re-verified against the sidecar before upload.
+  3. Subtask links — POST /rest/api/3/issueLink (type: Jira subtask link type)
+                     Inward direction only; prevents double-linking.
+  4. Issue links   — POST /rest/api/3/issueLink (all non-subtask types)
+                     Both directions where the link target was restored in this job.
+                     Links to items outside the selection are skipped and logged.
+```
+
+#### Error Handling
+
+An error on any individual item (comment, attachment, link) is:
+
+1. Logged with `itemId`, `phase`, and `message`.
+2. Counted in the relevant `*Errors` field of `PostIssuePassReport`.
+3. Accumulated into `RestoreRunResult.errorCount`.
+4. **Does not halt the pass** — execution continues with the next item.
+
+A per-issue failure in this phase does not emit `job_failed`. The pass always
+runs to completion. When `errorCount > 0` the job status becomes
+`completed_with_errors` and the UI must display "Completed with N errors"
+(T5 §6.2b).
+
+#### ADF Media-Link Warning
+
+After every attachment is uploaded, the orchestrator compares the new
+Atlassian-assigned `attachmentId` with the backed-up `attachmentId`. When they
+differ:
+
+- `PostIssuePassReport.adfMediaLinkWarning` is set to `true`.
+- The affected Issue key is added to `adfMediaLinkAffectedIssueKeys[]`.
+- A best-effort warning line is written to the restore report noting that ADF
+  `media` nodes in Issue descriptions or comments may reference the old ID and
+  be broken.
+
+Full ADF media-link rewriting is a Phase 2 item (T5 OQ-5).
+
+#### PostIssuePassReport Counts (restore report)
+
+`RestoreRunResult.postIssuePassReport` is populated by the orchestrator at the
+end of the `comment-attachment-subtask-issuelink` phase. Counts are
+per-individual-item, not per-issue. The restore report UI surfaces these six
+count pairs:
+
+| Displayed label | Fields |
+|-----------------|--------|
+| Comments | `commentsRestored` / `commentErrors` |
+| Attachments | `attachmentsRestored` / `attachmentErrors` |
+| Subtask links | `subtaskLinksRestored` / `subtaskLinkErrors` |
+| Issue links | `issueLinksRestored` / `issueLinkErrors` |
+
+---
+
+### Restore Phase Chain — Full Sequence Diagram (Guard Insertion Points)
+
+The diagram below is the authoritative visual for restore phase sequencing. It
+expands the Restore Flow Sequence Diagram (in the Restore Subsystem section
+above) to show exactly where each guard fires, where conflict pauses can occur,
+and where the post-issue pass runs.
+
+```mermaid
+sequenceDiagram
+    participant Op    as Operator (UI)
+    participant RJ    as RestoreJobsRouter
+    participant Guard as GuardChain
+    participant Orch  as RestoreOrchestrator
+    participant API   as Jira REST API
+    participant DB    as SQLite Store
+
+    Op->>RJ: POST /api/restore-jobs
+    RJ->>DB: INSERT restore_jobs (status=queued)
+    RJ-->>Op: 201 { jobId, status: "queued" }
+    Op->>RJ: GET /api/restore-jobs/{jobId}/events (SSE)
+    RJ-->>Op: SSE stream open
+
+    Note over Orch,DB: ── site-reference-data ──
+    Orch->>Op: SSE phase_started { phase: "site-reference-data" }
+    Orch->>API: GET /rest/api/3/issuetype + GET /rest/api/3/field
+    Orch->>DB: read backup snapshot for restore context
+    Orch->>Op: SSE phase_completed { phase: "site-reference-data", restoredCount, errorCount }
+
+    Note over Guard,API: ── GUARD 1: Trash Detection (Project Phase) ──
+    Orch->>Op: SSE phase_started { phase: "project" }
+    loop per selected project
+        Guard->>API: GET /rest/api/3/project/{id} (check trash status)
+        API-->>Guard: project metadata → TrashStatus
+        alt TrashStatus.inTrash AND destination === "original"
+            Guard-->>Orch: GuardResult { passed: false, failureCode: "project_in_trash" }
+            Note over Orch: Force destination → "alternate"<br/>Append TrashStatus to trashDetectionResults[]<br/>Execution continues — NOT job_failed
+        else
+            Guard-->>Orch: GuardResult { passed: true, guardName: "trash-detection" }
+        end
+        Orch->>API: POST /rest/api/3/project (create) or PUT (override)
+    end
+    Orch->>Op: SSE phase_completed { phase: "project", restoredCount, errorCount }
+
+    Note over Orch,API: ── workflow phase (no guard) ──
+    Orch->>Op: SSE phase_started { phase: "workflow" }
+    Orch->>API: restore Workflow + WorkflowScheme
+    Orch->>Op: SSE phase_completed { phase: "workflow", ... }
+
+    Note over Orch,API: ── custom-field phase (no guard) ──
+    Orch->>Op: SSE phase_started { phase: "custom-field" }
+    Orch->>API: restore CustomField + FieldConfiguration
+    Orch->>Op: SSE phase_completed { phase: "custom-field", ... }
+
+    Note over Guard,DB: ── GUARD 2: Board Scope Re-Check (before Board phase) ──
+    Guard->>DB: SELECT scopes FROM credentials WHERE connectionId = ?
+    DB-->>Guard: scopes (space-delimited scope string)
+    alt write:board-scope:jira-software OR write:board-scope.admin:jira-software MISSING
+        Guard-->>Orch: GuardResult { passed: false, failureCode: "scope_missing",<br/>missingScopes: ["write:board-scope.admin:jira-software"] }
+        Orch->>Op: SSE job_failed { error: { code: "dependency_phase_failed",<br/>phase: "board", message: "Missing board scopes: [...]" } }
+        Orch->>DB: UPDATE restore_jobs SET status="failed", phaseDiagnostic=...
+        Note over Orch: Execution halts — sprint, issue, post-issue pass NEVER run
+    else Both board scopes present
+        Guard-->>Orch: GuardResult { passed: true, guardName: "board-scope-recheck" }
+        Orch->>Op: SSE phase_started { phase: "board" }
+        Orch->>API: restore Board(s)
+        Orch->>Op: SSE phase_completed { phase: "board", ... }
+
+        Note over Orch,DB: ── sprint phase ──
+        Orch->>Op: SSE phase_started { phase: "sprint" }
+        Orch->>API: restore Sprint(s) per board
+        Orch->>Op: SSE phase_completed { phase: "sprint", ... }
+
+        Note over Orch,API: ── issue phase (with conflict detection for "ask" mode) ──
+        Orch->>Op: SSE phase_started { phase: "issue" }
+        loop per Issue in selection (heartbeat ≤10 s)
+            alt conflictMode === "ask" AND item already exists on site
+                Orch->>Op: SSE conflict_pause { conflictId, phase: "issue",<br/>itemId, conflictType: "item_exists", existingItemSummary }
+                Note over Op,Orch: Orchestrator awaits ConflictDecision<br/>(stalled-alert timer suspended during pause)
+                Op->>RJ: POST /api/restore-jobs/{id}/conflict-decision<br/>{ conflictId, decision, applyToAll }
+                RJ->>Orch: Resolve awaited Promise with ConflictDecision
+                Orch->>Op: SSE conflict_resumed { conflictId, decision }
+            else conflictMode === "override" AND item exists
+                Orch->>API: PUT /rest/api/3/issue/{id} (overwrite)
+            else conflictMode === "skip" AND item exists
+                Note over Orch: Skip — no write; logged but not counted as error
+            else item does not exist
+                Orch->>API: POST /rest/api/3/issue (create)
+            end
+            Orch->>Op: SSE phase_progress { processed, total }
+        end
+        Orch->>Op: SSE phase_completed { phase: "issue", restoredCount, errorCount }
+
+        Note over Orch,API: ── post-issue-creation pass ──
+        Orch->>Op: SSE phase_started { phase: "comment-attachment-subtask-issuelink" }
+        loop per restored Issue (chronological restore order)
+            Orch->>API: POST /rest/api/3/issue/{id}/comment (per comment, oldest first)
+            Orch->>API: POST /rest/api/3/issue/{id}/attachments (per attachment, SHA-256 verified)
+            Orch->>API: POST /rest/api/3/issueLink (subtask links — inward only)
+            Orch->>API: POST /rest/api/3/issueLink (issue links — targets in selection only)
+            Orch->>Op: SSE phase_progress { processed, total }
+        end
+        Orch->>Orch: Compute PostIssuePassReport<br/>(compare new vs backed-up attachmentId for ADF warning)
+        alt PostIssuePassReport.adfMediaLinkWarning === true
+            Note over Orch: Write ADF media-link warning to restore report<br/>(affected issue keys logged — full rewrite is Phase 2)
+        end
+        Orch->>Op: SSE phase_completed { phase: "comment-attachment-subtask-issuelink",<br/>restoredCount, errorCount }
+
+        Orch->>DB: UPDATE restore_jobs SET status, restoredCount, errorCount,<br/>postIssuePassReport, trashDetectionResults, completedAt
+        Orch->>Op: SSE job_completed { errors, restoredCount }
+    end
+```
+
+---
+
 ## API Surface (T0 §2)
 
 The Platform Stub exposes four endpoint groups. All paths are mounted under
@@ -1560,11 +2000,20 @@ The Platform Stub exposes four endpoint groups. All paths are mounted under
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/connections` | Create or update a connection (OAuth or Manual) |
+| `GET` | `/api/connections` | List all connected Jira sites |
+| `GET` | `/api/connections/:id/probes` | Latest permission-probe results for a connection |
+| `GET` | `/api/oauth/authorize` | Start the OAuth 3LO authorization flow |
+| `GET` | `/api/oauth/callback` | OAuth callback — exchanges code for tokens |
+| `POST` | `/api/discover` | Run project discovery for a connection |
 | `GET` | `/api/inventory` | Return the latest discovery manifest for a connection |
+| `GET` | `/api/inventory/:type` | Paginated object list (`Issue`, `Project`, `Board`, `Sprint`) |
 | `POST` | `/api/policies` | Create or update the backup policy for a connection |
-| `POST` | `/api/restores` | Initiate a restore job |
-| `GET` | `/api/restores/:id` | Poll restore job status |
-| `GET` | `/api/restores/:id/events` | Server-Sent Events stream for restore progress |
+| `GET` | `/api/jobs/:id` | Get backup job status and last heartbeat event |
+| `POST` | `/api/restore-jobs` | Create and launch a restore job |
+| `GET` | `/api/restore-jobs/:id/events` | SSE stream of restore phase events for a job |
+| `GET` | `/api/restore-jobs/trash-check` | Pre-flight trash-window check for selected project keys |
+| `POST` | `/api/restores` | _(Legacy stub — superseded by `/api/restore-jobs`)_ |
+| `GET` | `/api/restores/:id` | _(Legacy stub — superseded by `/api/restore-jobs`)_ |
 
 ---
 

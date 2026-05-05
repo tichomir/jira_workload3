@@ -760,19 +760,52 @@ Three options are presented:
 
 **Skip** is pre-selected. Accept the default and click **Next →**.
 
+> **Ask per conflict — interactive prompting is Phase 2.** The conflict mode
+> selector is fully functional and the `ask` value is accepted by the API, but
+> mid-stream interactive pause-and-prompt during a live restore job is deferred
+> to Phase 2. In Phase 1, selecting "Ask per conflict" records the preference but
+> the restore engine treats it the same as Skip during execution.
+
 ---
 
 ### Step 3 — Choose destination
 
-The wizard advances to **Step 3 — Restore destination**.
+The wizard advances to **Step 3 — Restore destination**. As soon as this step
+loads, a pre-flight trash check runs automatically.
+
+#### Trash detection — automatic alternate-location routing
+
+Before rendering the destination options, the wizard calls
+`GET /api/restore-jobs/trash-check?connectionId=…&projectKeys=…` for every
+project key present in the selection. If any project is currently in the
+**Atlassian-managed 60-day trash window**, the UI:
+
+1. Shows a yellow warning banner:
+   > **Project is in Atlassian native trash; in-place restore unavailable.**
+   > Project PROJ is in the Atlassian-managed 60-day trash window. Restore
+   > destination has been automatically set to **Alternate location**.
+2. Locks the **Original location** option (radio disabled, label shows
+   "Unavailable — project is in Atlassian native trash.").
+3. Pre-selects **Alternate location (same Jira site)** and requires you to
+   enter a target project key before proceeding.
+
+The trash check fires silently ("Checking project trash status…") and resolves
+before the **Next →** button becomes active.
+
+> **Restore from Atlassian native trash is not supported.** Projects in the
+> 60-day trash window must use alternate-location restore. Native trash
+> integration (restoring back to the exact trashed project) is Phase 2.
+
+#### Destination options
 
 | Option | Description |
 |---|---|
-| **Original location** | Restore objects back to the same Jira project from which they were backed up. |
-| **Alternate location (same Jira site)** | Restore into a different project on the same connected site. Requires a target project key. |
+| **Original location** | Restore objects back to the same Jira project from which they were backed up. Blocked if any selected project is in Atlassian native trash. |
+| **Alternate location (same Jira site)** | Restore into a different project on the same connected site. Requires a target project key. Automatically selected when trash is detected. |
 | **Export / Browser Download** | Download the selected backup data as a file instead of writing back to Jira. |
 
-Select **Original location** and click **Next →**.
+Select **Original location** (or accept the alternate if trash was detected)
+and click **Next →**.
 
 > **Cross-site restore is not supported in Phase 1.** A notice banner in the
 > UI confirms that all destination options above apply to the same connected
@@ -818,9 +851,63 @@ phase row in dependency order as events arrive:
 
 Each row transitions: **pending (·) → running (spinner) → completed (✓)**.
 
+#### Pre-phase guards
+
+Two guards run automatically during the sequence and can halt execution
+before their respective phases:
+
+- **Trash detection** — runs immediately before the **Project** phase. Checks
+  whether any selected project is in the Atlassian 30–60 day trash window. If
+  `destination === "original"` and a project is trashed, the effective
+  destination is silently switched to `"alternate"` and a server log line is
+  emitted:
+  ```
+  [restore] guard=trash-detection projectKey=PROJ trashed=true
+  [restore] guard=trash-detection jobId=<id> forcing destination=alternate
+  ```
+  Trash detection does **not** halt execution; the job continues with the
+  alternate destination.
+
+- **Board scope re-check** — runs immediately before the **Board** phase.
+  Reads the stored token scopes for the active connection and verifies that
+  **both** `write:board-scope:jira-software` and
+  `write:board-scope.admin:jira-software` are present. If either scope is
+  missing, the stream emits `job_failed` with
+  `error.code: "dependency_phase_failed"` and the Board phase and all
+  downstream phases are blocked. Server log:
+  ```
+  [permission-probe] scope=write:board-scope:jira-software outcome=ok
+  [permission-probe] scope=write:board-scope.admin:jira-software outcome=missing
+  [restore] phase=board outcome=failed jobId=<id> guard=board-scope-recheck
+  ```
+
 If a phase throws, it shows **failed (✕)** and all downstream phases show
 **blocked**. The SSE stream closes after a `job_failed` event with
 `error.code: "dependency_phase_failed"` — subsequent phases are never started.
+
+#### Post-issue-creation pass sub-phase events
+
+After all Issue bodies are written in the **Issue** phase, the
+`comment-attachment-subtask-issuelink` phase executes a sequential post-issue
+pass with three sub-phases. The SSE stream emits a `post_issue_sub_phase` event
+after each sub-phase:
+
+| Sub-phase | SSE `subPhase` value | What is restored |
+|---|---|---|
+| 1 | `comment` | ADF comments in authored order |
+| 2 | `subtask` | Subtask link relationships |
+| 3 | `issuelink` | All other issue link types (blocks, relates to, duplicates, etc.) |
+
+Each event includes `restored`, `errors`, and `attempted` counts:
+
+```json
+{ "type": "post_issue_sub_phase", "jobId": "…", "subPhase": "comment",
+  "restored": 14, "errors": 0, "attempted": 14 }
+{ "type": "post_issue_sub_phase", "jobId": "…", "subPhase": "subtask",
+  "restored": 3, "errors": 0, "attempted": 3 }
+{ "type": "post_issue_sub_phase", "jobId": "…", "subPhase": "issuelink",
+  "restored": 7, "errors": 1, "attempted": 8 }
+```
 
 The status banner transitions:
 
@@ -840,6 +927,37 @@ restore job may be stalled.**
 When all phases complete the status banner shows **Completed successfully.**
 (or **Completed with N errors** if item-level errors occurred). Click
 **← Start another restore** to return to the wizard.
+
+#### Reading the restore report
+
+The `job_completed` terminal SSE event carries the aggregate totals:
+
+```json
+{
+  "type": "job_completed",
+  "jobId": "…",
+  "restoredCount": 24,
+  "errors": 1
+}
+```
+
+Sub-phase counts are reported via the `post_issue_sub_phase` events streamed
+during the `comment-attachment-subtask-issuelink` phase (see Step 5 above).
+
+#### ADF media link warning
+
+After attachments are restored they receive new Jira `attachmentId` values.
+ADF `media` nodes in Issue descriptions and comments that reference the old
+attachment IDs will be broken. The restore report includes a best-effort
+warning when this condition is detected:
+
+```json
+{ "adfMediaLinkWarning": true,
+  "adfMediaLinkAffectedIssueKeys": ["PROJ-12", "PROJ-34"] }
+```
+
+Full ADF media link rewriting is **Phase 2**. The restore completes
+successfully even when the warning fires — it is informational only.
 
 ---
 
@@ -1425,4 +1543,91 @@ echo "${PHASE_SEQUENCE}" | awk '
 
 echo ""
 echo "All restore-protected-objects smoke checks passed."
+```
+
+### Probe 9 — restore sprint-2 guards: trash-check endpoint, board scope recheck & post-issue pass
+
+```bash
+#!/usr/bin/env bash
+# restore-sprint2-guards smoke probe
+# timeout: 60
+#
+# Verifies Sprint 2 restore pre-flight guards and unit-tested modules:
+#   GET /api/restore-jobs/trash-check  — live (non-trashed) project keys
+#   GET /api/restore-jobs/trash-check  — TRASH-prefixed key → trashedProjectKeys populated
+#   Unit tests: boardScopeRecheck, trashDetectionGuard, RestoreOrchestrator (guard chain)
+#
+# Requires: running API server (npm run server) for HTTP steps.
+set -euo pipefail
+
+PORT=${PORT:-3000}
+BASE="http://localhost:${PORT}"
+SMOKE_CLOUD_ID="smoke-guards-$(date +%s)"
+
+echo "==> [1/7] Create smoke connection"
+CONN_RESPONSE=$(curl -sf -X POST "${BASE}/api/connections" \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"cloudId\":      \"${SMOKE_CLOUD_ID}\",
+    \"siteName\":     \"Guards Smoke Site\",
+    \"accessToken\":  \"smoke-access-token\",
+    \"refreshToken\": \"smoke-refresh-token\",
+    \"expiresAt\":    9999999999
+  }")
+
+CONNECTION_ID=$(echo "${CONN_RESPONSE}" | python3 -c "import json,sys; print(json.load(sys.stdin)['connectionId'])")
+echo "PASS: connection created ${CONNECTION_ID}"
+
+echo "==> [2/7] GET /api/restore-jobs/trash-check — non-trashed project keys return empty array"
+TRASH_RESP=$(curl -sf \
+  "${BASE}/api/restore-jobs/trash-check?connectionId=${CONNECTION_ID}&projectKeys=MYPROJ,DEMO")
+
+echo "${TRASH_RESP}" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+assert 'trashedProjectKeys' in data, 'missing trashedProjectKeys field'
+assert isinstance(data['trashedProjectKeys'], list), 'trashedProjectKeys is not a list'
+assert len(data['trashedProjectKeys']) == 0, \
+    f'expected empty trashedProjectKeys for live projects, got {data[\"trashedProjectKeys\"]}'
+print('PASS: non-trashed project keys return trashedProjectKeys=[]')
+"
+
+echo "==> [3/7] GET /api/restore-jobs/trash-check — TRASH-prefixed key → in-trash response"
+TRASH_RESP2=$(curl -sf \
+  "${BASE}/api/restore-jobs/trash-check?connectionId=${CONNECTION_ID}&projectKeys=TRASHPROJ,MYPROJ")
+
+echo "${TRASH_RESP2}" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+assert 'trashedProjectKeys' in data, 'missing trashedProjectKeys field'
+trashed = data['trashedProjectKeys']
+assert 'TRASHPROJ' in trashed, f'expected TRASHPROJ in trashedProjectKeys, got {trashed}'
+assert 'MYPROJ' not in trashed, f'expected MYPROJ NOT in trashedProjectKeys, got {trashed}'
+print(f'PASS: trash-check correctly identified TRASHPROJ as in-trash, trashedProjectKeys={trashed}')
+"
+
+echo "==> [4/7] GET /api/restore-jobs/trash-check — missing connectionId returns 400"
+HTTP_STATUS=$(curl -o /dev/null -s -w '%{http_code}' \
+  "${BASE}/api/restore-jobs/trash-check?projectKeys=MYPROJ")
+[ "${HTTP_STATUS}" -eq 400 ] \
+  && echo "PASS: missing connectionId returns 400" \
+  || { echo "FAIL: expected 400 got ${HTTP_STATUS}"; exit 1; }
+
+echo "==> [5/7] boardScopeRecheck unit tests"
+npx vitest run src/workload/restore/boardScopeRecheck.test.ts \
+  && echo "PASS: boardScopeRecheck tests passed" \
+  || { echo "FAIL: boardScopeRecheck tests failed"; exit 1; }
+
+echo "==> [6/7] trashDetectionGuard unit tests"
+npx vitest run src/workload/restore/trashDetectionGuard.test.ts \
+  && echo "PASS: trashDetectionGuard tests passed" \
+  || { echo "FAIL: trashDetectionGuard tests failed"; exit 1; }
+
+echo "==> [7/7] RestoreOrchestrator unit tests (covers board-scope guard + post-issue pass)"
+npx vitest run src/workload/restore/RestoreOrchestrator.test.ts \
+  && echo "PASS: RestoreOrchestrator tests passed" \
+  || { echo "FAIL: RestoreOrchestrator tests failed"; exit 1; }
+
+echo ""
+echo "All restore-sprint2-guards smoke checks passed."
 ```

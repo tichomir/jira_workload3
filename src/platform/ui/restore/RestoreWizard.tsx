@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import './RestoreWizard.css';
 
@@ -82,6 +82,22 @@ const STEPS = [
   { label: 'Destination' },
   { label: 'Review' },
 ];
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Mirrors backend extractProjectKeys: pulls project key from issue keys and plain project keys. */
+function extractProjectKeysFromSelection(selection: Set<string>): string[] {
+  const keys = new Set<string>();
+  for (const item of selection) {
+    const issueMatch = item.match(/^([A-Z][A-Z0-9_]*)-\d+$/);
+    if (issueMatch) {
+      keys.add(issueMatch[1]);
+    } else if (/^[A-Z][A-Z0-9_]*$/.test(item)) {
+      keys.add(item);
+    }
+  }
+  return [...keys];
+}
 
 // ── Step 1: Object Selection ─────────────────────────────────────────────────
 
@@ -316,9 +332,20 @@ interface Step3Props {
   setDestination: (d: RestoreDestinationType) => void;
   alternateProjectKey: string;
   setAlternateProjectKey: (k: string) => void;
+  trashedProjectKeys: string[];
+  trashCheckLoading: boolean;
 }
 
-function Step3({ destination, setDestination, alternateProjectKey, setAlternateProjectKey }: Step3Props) {
+function Step3({
+  destination,
+  setDestination,
+  alternateProjectKey,
+  setAlternateProjectKey,
+  trashedProjectKeys,
+  trashCheckLoading,
+}: Step3Props) {
+  const hasTrash = trashedProjectKeys.length > 0;
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
       <div>
@@ -329,46 +356,77 @@ function Step3({ destination, setDestination, alternateProjectKey, setAlternateP
         </p>
       </div>
 
+      {trashCheckLoading && (
+        <div className="rw__hint" aria-live="polite">Checking project trash status…</div>
+      )}
+
+      {!trashCheckLoading && hasTrash && (
+        <div className="rw__trash-notice" role="alert" data-testid="trash-notice">
+          <span className="rw__trash-notice-icon" aria-hidden="true">⚠</span>
+          <span>
+            <strong>Project is in Atlassian native trash; in-place restore unavailable.</strong>{' '}
+            {trashedProjectKeys.length === 1
+              ? `Project ${trashedProjectKeys[0]} is`
+              : `Projects ${trashedProjectKeys.join(', ')} are`}{' '}
+            in the Atlassian-managed 60-day trash window. Restore destination has been
+            automatically set to <strong>Alternate location</strong>.
+          </span>
+        </div>
+      )}
+
       <div className="rw__radio-group" role="radiogroup" aria-label="Restore destination">
-        {DESTINATION_OPTIONS.map((opt) => (
-          <div key={opt.value}>
-            <label
-              className={`rw__radio-option${destination === opt.value ? ' rw__radio-option--selected' : ''}`}
-            >
-              <input
-                type="radio"
-                name="destination"
-                value={opt.value}
-                checked={destination === opt.value}
-                onChange={() => setDestination(opt.value)}
-                aria-label={opt.label}
-              />
-              <div className="rw__radio-text">
-                <span className="rw__radio-label">{opt.label}</span>
-                <span className="rw__radio-desc">{opt.desc}</span>
-              </div>
-            </label>
-            {opt.value === 'alternate' && destination === 'alternate' && (
-              <div className="rw__alt-fields">
-                <div className="rw__field">
-                  <label className="rw__label" htmlFor="rw-alt-project">Target project key</label>
-                  <input
-                    id="rw-alt-project"
-                    className="rw__input"
-                    type="text"
-                    placeholder="e.g. PROJ"
-                    value={alternateProjectKey}
-                    onChange={(e) => setAlternateProjectKey(e.target.value.toUpperCase())}
-                    aria-label="Target project key for alternate location restore"
-                  />
-                  <span className="rw__hint">
-                    Enter the project key of the target project on the same connected Jira site.
+        {DESTINATION_OPTIONS.map((opt) => {
+          const isLocked = hasTrash && opt.value === 'original';
+          return (
+            <div key={opt.value}>
+              <label
+                className={[
+                  'rw__radio-option',
+                  destination === opt.value ? 'rw__radio-option--selected' : '',
+                  isLocked ? 'rw__radio-option--locked' : '',
+                ].filter(Boolean).join(' ')}
+              >
+                <input
+                  type="radio"
+                  name="destination"
+                  value={opt.value}
+                  checked={destination === opt.value}
+                  onChange={() => !isLocked && setDestination(opt.value)}
+                  disabled={isLocked}
+                  aria-label={opt.label}
+                  aria-disabled={isLocked || undefined}
+                />
+                <div className="rw__radio-text">
+                  <span className="rw__radio-label">{opt.label}</span>
+                  <span className="rw__radio-desc">
+                    {isLocked
+                      ? 'Unavailable — project is in Atlassian native trash.'
+                      : opt.desc}
                   </span>
                 </div>
-              </div>
-            )}
-          </div>
-        ))}
+              </label>
+              {opt.value === 'alternate' && destination === 'alternate' && (
+                <div className="rw__alt-fields">
+                  <div className="rw__field">
+                    <label className="rw__label" htmlFor="rw-alt-project">Target project key</label>
+                    <input
+                      id="rw-alt-project"
+                      className="rw__input"
+                      type="text"
+                      placeholder="e.g. PROJ"
+                      value={alternateProjectKey}
+                      onChange={(e) => setAlternateProjectKey(e.target.value.toUpperCase())}
+                      aria-label="Target project key for alternate location restore"
+                    />
+                    <span className="rw__hint">
+                      Enter the project key of the target project on the same connected Jira site.
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       <div className="rw__crosssite-note" role="note">
@@ -509,6 +567,14 @@ export function RestoreWizard() {
   const [destination, setDestination] = useState<RestoreDestinationType>('original');
   const [alternateProjectKey, setAlternateProjectKey] = useState('');
 
+  // Step 3 — trash detection (pre-flight check before job creation)
+  const [trashedProjectKeys, setTrashedProjectKeys] = useState<string[]>([]);
+  const [trashCheckLoading, setTrashCheckLoading] = useState(false);
+  // Stable ref so the trash-check effect always sees the latest selection without
+  // needing 'selection' in its dependency array (selection is a mutable Set).
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
+
   // Step 4 — submission
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -546,6 +612,52 @@ export function RestoreWizard() {
       .finally(() => { if (!cancelled) setInventoryLoading(false); });
     return () => { cancelled = true; };
   }, [connectionId]);
+
+  // Trash detection: when entering Step 3, pre-flight check for projects in Atlassian trash.
+  // Forces destination to 'alternate' and shows an inline notice if any project is trashed.
+  // Source: T5 §4.2
+  useEffect(() => {
+    if (step !== 3 || !connectionId) {
+      setTrashedProjectKeys([]);
+      return;
+    }
+
+    const projectKeys = extractProjectKeysFromSelection(selectionRef.current);
+    if (projectKeys.length === 0) {
+      setTrashedProjectKeys([]);
+      return;
+    }
+
+    let cancelled = false;
+    setTrashCheckLoading(true);
+
+    const url =
+      `/api/restore-jobs/trash-check` +
+      `?connectionId=${encodeURIComponent(connectionId)}` +
+      `&projectKeys=${encodeURIComponent(projectKeys.join(','))}`;
+
+    fetch(url)
+      .then((r) => (r.ok ? r.json() : Promise.resolve({ trashedProjectKeys: [] })))
+      .then((data: { trashedProjectKeys: string[] }) => {
+        if (!cancelled) {
+          const trashed = data.trashedProjectKeys ?? [];
+          setTrashedProjectKeys(trashed);
+          if (trashed.length > 0) {
+            setDestination('alternate');
+          }
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setTrashedProjectKeys([]);
+      })
+      .finally(() => {
+        if (!cancelled) setTrashCheckLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  // selectionRef is a ref (stable identity); connectionId and step are the real triggers.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, connectionId]);
 
   // Navigation guards
   const canProceedStep1 = !connectionsLoading && connectionId !== '' && backupPointId !== null && selection.size > 0;
@@ -616,6 +728,7 @@ export function RestoreWizard() {
   const nextDisabled =
     (step === 1 && !canProceedStep1) ||
     (step === 3 && !canProceedStep3) ||
+    (step === 3 && trashCheckLoading) ||
     inventoryLoading;
 
   return (
@@ -669,6 +782,8 @@ export function RestoreWizard() {
             setDestination={setDestination}
             alternateProjectKey={alternateProjectKey}
             setAlternateProjectKey={setAlternateProjectKey}
+            trashedProjectKeys={trashedProjectKeys}
+            trashCheckLoading={trashCheckLoading}
           />
         )}
         {step === 4 && (

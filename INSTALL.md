@@ -127,3 +127,4 @@ All endpoints are served by the Express API server (`npm run server`) on
 | `GET` | `/api/inventory/:type` | Paginated object list (`Issue`, `Project`, `Board`, `Sprint`) |
 | `POST` | `/api/restore-jobs` | Create and launch a restore job |
 | `GET` | `/api/restore-jobs/:id/events` | SSE stream of restore phase events for a job |
+| `GET` | `/api/restore-jobs/trash-check` | Pre-flight trash-window check for selected project keys |
