@@ -532,6 +532,93 @@ Example output:
 
 ---
 
+## Browse protected inventory
+
+After connecting a Jira site and running at least one discover run, open the
+inventory view to browse all protected objects catalogued in the most recent
+backup-point manifest.
+
+### Prerequisites
+
+- A connected Jira site — see [Connect Jira Site walkthrough](#connect-jira-site-walkthrough) above
+- At least one completed discover run — see [Discover Projects](#discover-projects) above.
+  The discover run writes the backup-point manifest that powers the sidebar counts.
+
+---
+
+### Step 1 — Open the Inventory page
+
+Navigate to `https://localhost/inventory` in your browser. The app auto-selects
+the first connected site.
+
+- **No connection found** — the page shows a prompt linking back to the
+  Connections page. Connect a Jira site first.
+- **No backup yet** — the sidebar renders all four object types with a count of
+  zero and a "No backup yet" banner. Counts populate after the first discover run.
+
+---
+
+### Step 2 — Read the Protected Objects sidebar
+
+The **Protected Objects** sidebar lists four object types sourced from the most
+recent backup-point manifest for the connected site:
+
+| Row | Count source |
+|---|---|
+| **Issues** | Sum of `issueCounts.backed` across all non-JSM projects in the manifest |
+| **Projects** | Non-JSM projects (`service_desk` projects are excluded — JSM is Phase 2) |
+| **Boards** | Deduplicated `boardIds` across all non-JSM projects |
+| **Sprints** | Deduplicated `sprintIds` across all non-JSM projects |
+
+Each sidebar row shows:
+
+- The object-type label and total count
+- A relative timestamp ("2h ago") indicating when the most recent backup ran;
+  hover to see the full ISO-8601 timestamp
+
+**Issues** is the default selection. Click any row to switch the active type.
+
+---
+
+### Step 3 — Browse items in the Object Explorer
+
+Clicking a sidebar row loads its items in the **Object Explorer** panel on the
+right.
+
+- The **header** shows the object type name and the connected site name.
+- The **pagination bar** shows "Showing 1–50 of N" with **← Prev** and
+  **Next →** buttons. Each page returns up to 50 items.
+- Each **item row** shows:
+  - A **change badge** (`Added`, `Modified`, `Deleted`, or `Unchanged`)
+    reflecting the diff relative to the previous backup point for this
+    connection. On the first-ever backup all items show `Added`.
+  - The **display name** — for Issues this is the Jira key format
+    `<PROJECT_KEY>-<N>` (e.g. `PROJ-42`).
+  - For Issues, the **summary** text appears beneath the display name when
+    non-empty.
+  - A **⊕** trace button on the far right.
+
+Navigate forward with **Next →** and backward with **← Prev**. Both buttons are
+disabled when there is no further page in that direction.
+
+---
+
+### Step 4 — Reveal backup-point traceability (single click)
+
+Click the **⊕** button on any item row to expand its trace panel inline:
+
+| Field | Value |
+|---|---|
+| **Backup Point ID** | UUID of the backup point that captured this object |
+| **Captured At** | Exact local timestamp when this object was written to the backup |
+
+Click **⊕** again to collapse. Every item in the Object Explorer carries
+`backupPointId` and `backupPointTimestamp` — a single click establishes
+full chain-of-custody from any protected object back to the backup point that
+holds its data.
+
+---
+
 ## Smoke probes (machine-readable)
 
 Each block below is a self-contained POSIX shell script. Run them in order
@@ -670,22 +757,22 @@ INVENTORY=$(curl -sf "${BASE}/api/inventory?connectionId=${CONNECTION_ID}")
 echo "${INVENTORY}" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
-assert 'manifestId' in data, 'missing manifestId'
-assert 'completedAt' in data, 'missing completedAt'
-assert 'counts' in data, 'missing counts'
-counts = data['counts']
-for key in ('projects', 'issues', 'boards', 'sprints'):
-    assert key in counts, f'missing counts.{key}'
+assert 'objectTypes' in data, 'missing objectTypes'
+otypes = data['objectTypes']
+assert isinstance(otypes, list) and len(otypes) > 0, 'objectTypes is empty'
+by_type = {e['type']: e for e in otypes}
+for t in ('Issue', 'Project', 'Board', 'Sprint'):
+    assert t in by_type, f'{t} entry missing from objectTypes'
 print('PASS: GET /api/inventory returned valid inventory response')
 "
 
-echo "==> [3/5] Verify inventory counts fields are numeric"
+echo "==> [3/5] Verify inventory count fields are integers"
 echo "${INVENTORY}" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
-counts = data['counts']
-for key in ('projects', 'issues', 'boards', 'sprints'):
-    assert isinstance(counts[key], int), f'counts.{key} is not an integer'
+otypes = data['objectTypes']
+for e in otypes:
+    assert isinstance(e['count'], int), f'objectTypes[{e[\"type\"]}].count is not an integer'
 print('PASS: all inventory count fields are integers')
 "
 
@@ -835,4 +922,139 @@ npx vitest run src/workload/backup/computeManifestDiff.test.ts \
 
 echo ""
 echo "All sprint3-deliverables smoke checks passed."
+```
+
+### Probe 7 — browse-protected-inventory: GET /api/inventory + GET /api/inventory/Issue
+
+```bash
+#!/usr/bin/env bash
+# browse-protected-inventory smoke probe
+# timeout: 60s
+# Verifies GET /api/inventory (objectTypes shape) and
+# GET /api/inventory/Issue (pagination + single-click traceability).
+# Seeds a minimal backup manifest and one Issue item via Python sqlite3 so
+# the probe is self-contained — no live Jira credentials required.
+# Requires: running API server (npm run server).
+set -euo pipefail
+
+PORT=${PORT:-3000}
+BASE="http://localhost:${PORT}"
+DB_PATH="${DB_PATH:-data/jira_workload.db}"
+SMOKE_CLOUD_ID="smoke-inv-$(date +%s)"
+
+echo "==> [1/5] Create smoke connection"
+CONN_RESPONSE=$(curl -sf -X POST "${BASE}/api/connections" \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"cloudId\":      \"${SMOKE_CLOUD_ID}\",
+    \"siteName\":     \"Inventory Smoke Site\",
+    \"accessToken\":  \"smoke-access-token\",
+    \"refreshToken\": \"smoke-refresh-token\",
+    \"expiresAt\":    9999999999
+  }")
+
+CONNECTION_ID=$(echo "${CONN_RESPONSE}" | python3 -c "import json,sys; print(json.load(sys.stdin)['connectionId'])")
+echo "PASS: connection created ${CONNECTION_ID}"
+
+echo "==> [2/5] Seed backup manifest + Issue items via Python sqlite3"
+BACKUP_POINT_ID="smoke-inv-bp-$(date +%s)"
+NOW=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
+
+python3 -c "
+import sqlite3, json, sys
+db_path, conn_id, cloud_id, bp_id, now = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+manifest = json.dumps({
+    'manifestId': bp_id,
+    'cloudId': cloud_id,
+    'discoveredAt': now,
+    'projectScope': 'all',
+    'selectedProjectKeys': [],
+    'projects': [{
+        'projectId': 'p1',
+        'projectKey': 'SMOKE',
+        'projectName': 'Smoke Project',
+        'projectTypeKey': 'software',
+        'issueCounts': {'total': 2, 'backed': 2, 'errored': 0},
+        'boardIds': ['b1'],
+        'sprintIds': ['s1'],
+        'changeBadge': 'added',
+    }],
+    'jsmDeferredProjects': [],
+    'fieldContexts': None,
+    'customFieldsCaptured': 0,
+    'customFieldsSkipped': [],
+    'coverageInvariant': None,
+    'diffSummary': None,
+})
+db = sqlite3.connect(db_path)
+db.execute(
+    'INSERT INTO backup_manifests (id, connectionId, cloudId, createdAt, manifestJson) VALUES (?,?,?,?,?)',
+    (bp_id, conn_id, cloud_id, now, manifest))
+db.executemany(
+    '''INSERT INTO backup_point_items
+       (connectionId, backupPointId, objectType, itemId, displayName, summary, changeBadge, capturedAt)
+       VALUES (?,?,'Issue',?,?,?,'added',?)''',
+    [(conn_id, bp_id, 'SMOKE-1', 'SMOKE-1', 'First smoke issue', now),
+     (conn_id, bp_id, 'SMOKE-2', 'SMOKE-2', 'Second smoke issue', now)])
+db.commit()
+db.close()
+print('Seeded backup manifest', bp_id, '+ 2 Issue items')
+" "${DB_PATH}" "${CONNECTION_ID}" "${SMOKE_CLOUD_ID}" "${BACKUP_POINT_ID}" "${NOW}"
+
+echo "PASS: seed complete"
+
+echo "==> [3/5] GET /api/inventory — assert HTTP 200 + non-empty objectTypes"
+INVENTORY=$(curl -sf "${BASE}/api/inventory?connectionId=${CONNECTION_ID}")
+
+echo "${INVENTORY}" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+assert 'objectTypes' in data, 'missing objectTypes'
+otypes = data['objectTypes']
+assert isinstance(otypes, list) and len(otypes) > 0, 'objectTypes is empty'
+by_type = {e['type']: e for e in otypes}
+assert 'Issue' in by_type, 'Issue entry missing from objectTypes'
+assert 'Project' in by_type, 'Project entry missing from objectTypes'
+assert by_type['Issue']['count'] >= 1, f'expected Issue count >= 1, got {by_type[\"Issue\"][\"count\"]}'
+assert data.get('backupPointId') == '${BACKUP_POINT_ID}', \
+    f'backupPointId mismatch: expected ${BACKUP_POINT_ID}, got {data.get(\"backupPointId\")}'
+print(f'PASS: GET /api/inventory returned {len(otypes)} objectTypes, Issue count={by_type[\"Issue\"][\"count\"]}')
+"
+
+echo "==> [4/5] GET /api/inventory/Issue — assert HTTP 200 + non-empty items"
+ITEM_LIST=$(curl -sf \
+  "${BASE}/api/inventory/Issue?connectionId=${CONNECTION_ID}&backupPointId=${BACKUP_POINT_ID}&limit=10&offset=0")
+
+echo "${ITEM_LIST}" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+assert 'items' in data, 'missing items field'
+assert 'pagination' in data, 'missing pagination field'
+items = data['items']
+assert isinstance(items, list) and len(items) > 0, \
+    f'expected non-empty items list, got {len(items)}'
+pg = data['pagination']
+assert pg['total'] >= 1, f'expected pagination.total >= 1, got {pg[\"total\"]}'
+assert pg['limit'] == 10, f'expected limit=10, got {pg[\"limit\"]}'
+assert pg['offset'] == 0, f'expected offset=0, got {pg[\"offset\"]}'
+print(f'PASS: GET /api/inventory/Issue returned {len(items)} item(s), total={pg[\"total\"]}')
+"
+
+echo "==> [5/5] Verify single-click traceability — backupPointId + timestamp on first item"
+echo "${ITEM_LIST}" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+item = data['items'][0]
+assert 'backupPointId' in item, 'item missing backupPointId'
+assert 'backupPointTimestamp' in item, 'item missing backupPointTimestamp'
+assert 'displayName' in item, 'item missing displayName'
+assert 'changeBadge' in item, 'item missing changeBadge'
+assert 'summary' in item, 'item missing summary'
+assert item['backupPointId'] == '${BACKUP_POINT_ID}', \
+    f'traceability mismatch: backupPointId={item[\"backupPointId\"]}'
+print(f'PASS: traceability OK — backupPointId={item[\"backupPointId\"]}, displayName={item[\"displayName\"]}')
+"
+
+echo ""
+echo "All browse-inventory smoke checks passed."
 ```

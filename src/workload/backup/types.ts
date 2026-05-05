@@ -206,6 +206,8 @@ export interface CaptureRunOptions {
    * Override via DCC_ATTACHMENT_DIR environment variable.
    */
   attachmentBaseDir?: string;
+  /** Optional callback invoked once per successfully assembled Issue payload. */
+  onIssueCaptured?: (issueKey: string, summary: string) => void;
 }
 
 /** Result returned by ICaptureOrchestrator.runCapture(). */

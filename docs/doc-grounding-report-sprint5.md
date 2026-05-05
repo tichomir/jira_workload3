@@ -1,5 +1,10 @@
 # Doc Grounding Report — Sprint 5
 
+> **Historical record.** This report was accurate at the time it was written.
+> All carry-forward P0s documented here were resolved during this sprint.
+> The Sprint 9 doc-grounding pass re-verified all referenced line numbers and
+> file paths remain accurate (see `doc-grounding-report-sprint9.md`).
+
 _Generated: 2026-05-04 | Author: devops-engineer-persona_
 _Scope: INSTALL.md, DEMO.md, docs/doc-grounding-report-sprint3.md, docs/doc-grounding-report-sprint4.md_
 _Sprint focus: Carry-forward P0 resolution — .env.example, Caddyfile, process.env refs, src/oauth/* line refs_

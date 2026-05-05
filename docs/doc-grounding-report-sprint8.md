@@ -1,5 +1,12 @@
 # Doc Grounding Report — Sprint 8 (Sprint 2 Phase 2)
 
+> **Historical record.** The two P0 carry-forwards identified here
+> (P0-S8-01 README missing Phase 2 sections; P0-S8-02 ARCHITECTURE.md `[search]`
+> log format mismatch) were both resolved in the Sprint 9 doc-grounding pass.
+> The `src/workload/http/JiraHttpClient.ts` line references cited in this report
+> (`:71`, `:83`, `:93`, `:107-109`, `:117`) were re-verified as still correct
+> in Sprint 9 (see `doc-grounding-report-sprint9.md`).
+
 _Generated: 2026-05-04 | Author: qa-engineer-persona_
 _Scope: README.md, INSTALL.md, DEMO.md, ARCHITECTURE.md, CHANGELOG.md_
 _Sprint focus: Sprint 2 Phase 2 additions — Custom Field Context Discovery, Issue Payload Assembler, Capture Orchestrator, JiraWorkload.snapshot()_

@@ -310,3 +310,54 @@ This is sprint 3 of 3 for the phase. Plan a slice of the deliverables appropriat
 - ✅ QA: doc-grounding verification + smoke-probe execution for Sprint 3 deliverables — Qa Engineer (⚡ Quick, 2 SP)
 
 ---
+### Sprint 1 — Inventory API & Sidebar (Phase 3 slice 1 of 2) | 2026-05-04 | ⏳ in progress | 29 SP est.
+**Goal:** [Phase: Protected Object Inventory & Browse Flow — Sprint 1 of 2]
+Deliver the operator-facing Inventory sidebar and Object Explorer that exercises the backup manifest produced by the snapshot phase. This is the browse-protected-inventory operator flow: sidebar with four object types defaulting to Issues, structured search and filter facets, and traceability from any item to its backup-point ID and timestamp.
+
+Deliverables (across all sprints in this phase):
+- GET /api/inventory endpoint returning objectTypes array with Project, Issue, Board, Sprint, Workflow, Custom Field entries with counts and lastBackupAt
+- Inventory sidebar UI with four Phase 1 object types (Issues default, Projects, Boards, Sprints) and per-type counts
+- Object Explorer pagination via GET /api/inventory/{type}?connectionId&backupPointId&limit&offset
+- Issue displayName rendering as <PROJECT_KEY>-<N> with changeBadge (added/modified/deleted/unchanged)
+- Structured filter facets: status, issueType, assignee, sprint, board, label, priority, date-range on updated
+- Exact-match Issue key search and tokenized case-insensitive Issue summary search
+- Tokenized partial-match attachment filename search
+- Body-content search explicitly disabled (no full-text across ADF description/comments)
+- JSM project exclusion from sidebar counts and inventory results
+- Single-click traceability from any item to backup-point ID + timestamp
+
+This is sprint 1 of 2 for the phase. Plan a slice of the deliverables appropriate for one sprint; remaining items will be picked up in subsequent sprints via the auto-extracted Carry-Forward Backlog.
+
+_Sprint started. Role checkpoints below will update as work completes._
+
+---
+### Sprint 1 — Inventory API & Sidebar (Phase 3 slice 1 of 2) | 2026-05-05 | 📋 reviewing | 29 SP
+**Goal:** [Phase: Protected Object Inventory & Browse Flow — Sprint 1 of 2]
+Deliver the operator-facing Inventory sidebar and Object Explorer that exercises the backup manifest produced by the snapshot phase. This is the browse-protected-inventory operator flow: sidebar with four object types defaulting to Issues, structured search and filter facets, and traceability from any item to its backup-point ID and timestamp.
+
+Deliverables (across all sprints in this phase):
+- GET /api/inventory endpoint returning objectTypes array with Project, Issue, Board, Sprint, Workflow, Custom Field entries with counts and lastBackupAt
+- Inventory sidebar UI with four Phase 1 object types (Issues default, Projects, Boards, Sprints) and per-type counts
+- Object Explorer pagination via GET /api/inventory/{type}?connectionId&backupPointId&limit&offset
+- Issue displayName rendering as <PROJECT_KEY>-<N> with changeBadge (added/modified/deleted/unchanged)
+- Structured filter facets: status, issueType, assignee, sprint, board, label, priority, date-range on updated
+- Exact-match Issue key search and tokenized case-insensitive Issue summary search
+- Tokenized partial-match attachment filename search
+- Body-content search explicitly disabled (no full-text across ADF description/comments)
+- JSM project exclusion from sidebar counts and inventory results
+- Single-click traceability from any item to backup-point ID + timestamp
+
+This is sprint 1 of 2 for the phase. Plan a slice of the deliverables appropriate for one sprint; remaining items will be picked up in subsequent sprints via the auto-extracted Carry-Forward Backlog.
+
+**Delivered:**
+- ✅ Define Inventory API contract and sidebar boundary in ARCHITECTURE.md — Software Architect (◈ Standard, 3 SP)
+- ✅ Implement GET /api/inventory endpoint with object-type counts and lastBackupAt — Backend Developer (◈ Standard, 3 SP)
+- ✅ Implement GET /api/inventory/{type} pagination endpoint — Backend Developer (◉ Deep, 5 SP)
+- ✅ Build Inventory sidebar UI with four object types and counts — Frontend Developer (◈ Standard, 3 SP)
+- ✅ Build Object Explorer list view with pagination and changeBadge — Frontend Developer (◉ Deep, 5 SP)
+- ✅ Update DEMO.md with browse-protected-inventory operator flow + smoke probe — Frontend Developer (⚡ Quick, 2 SP)
+- ✅ Update CHANGELOG.md and INSTALL.md for inventory endpoints — Devops Engineer (◈ Standard, 3 SP)
+- ✅ QA: end-to-end inventory flow tests (happy + error paths) — Qa Engineer (◈ Standard, 3 SP)
+- ✅ QA: doc-grounding verification for Sprint 1 docs — Qa Engineer (⚡ Quick, 2 SP)
+
+---

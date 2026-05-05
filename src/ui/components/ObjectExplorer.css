@@ -1,0 +1,289 @@
+/* ── Object Explorer ─────────────────────────────────────────── */
+.obj-exp {
+  flex: 1;
+  background: #ffffff;
+  border: 1px solid #dfe1e6;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(9, 30, 66, 0.08);
+  min-height: 320px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Header ──────────────────────────────────────────────────── */
+.obj-exp__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid #f4f5f7;
+  flex-shrink: 0;
+}
+
+.obj-exp__title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #172b4d;
+}
+
+.obj-exp__site {
+  font-size: 12px;
+  color: #6b778c;
+}
+
+/* ── Pagination bar ──────────────────────────────────────────── */
+.obj-exp__pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 20px;
+  background: #f8f9fa;
+  border-bottom: 1px solid #f4f5f7;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.obj-exp__count {
+  font-size: 12px;
+  color: #6b778c;
+  white-space: nowrap;
+}
+
+.obj-exp__pagination-controls {
+  display: flex;
+  gap: 6px;
+}
+
+.obj-exp__page-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #0052cc;
+  background: #ffffff;
+  border: 1px solid #c1c7d0;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.1s ease, border-color 0.1s ease;
+}
+
+.obj-exp__page-btn:hover:not(:disabled) {
+  background: #f4f5f7;
+  border-color: #0052cc;
+}
+
+.obj-exp__page-btn:disabled {
+  color: #c1c7d0;
+  cursor: default;
+}
+
+/* ── Items list ──────────────────────────────────────────────── */
+.obj-exp__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.obj-exp__row {
+  border-bottom: 1px solid #f4f5f7;
+}
+
+.obj-exp__row:last-child {
+  border-bottom: none;
+}
+
+.obj-exp__row--expanded {
+  background: #f8f9fa;
+}
+
+.obj-exp__row-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+}
+
+/* ── Change badge ────────────────────────────────────────────── */
+.obj-exp__badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.obj-exp__badge--added {
+  background: #e3fcef;
+  color: #006644;
+}
+
+.obj-exp__badge--modified {
+  background: #fffae6;
+  color: #7a4100;
+}
+
+.obj-exp__badge--deleted {
+  background: #ffebe6;
+  color: #bf2600;
+}
+
+.obj-exp__badge--unchanged {
+  background: #f4f5f7;
+  color: #42526e;
+}
+
+/* ── Row text ────────────────────────────────────────────────── */
+.obj-exp__row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.obj-exp__display-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #172b4d;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.obj-exp__summary {
+  font-size: 12px;
+  color: #6b778c;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Trace button ────────────────────────────────────────────── */
+.obj-exp__trace-btn {
+  padding: 2px 5px;
+  font-size: 15px;
+  line-height: 1;
+  color: #6b778c;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.1s ease, background 0.1s ease, border-color 0.1s ease;
+}
+
+.obj-exp__trace-btn:hover {
+  color: #0052cc;
+  background: #e8f0fe;
+  border-color: #b3d4ff;
+}
+
+.obj-exp__trace-btn--active {
+  color: #0052cc;
+  background: #e8f0fe;
+  border-color: #b3d4ff;
+}
+
+/* ── Trace panel ─────────────────────────────────────────────── */
+.obj-exp__trace-panel {
+  padding: 8px 16px 10px 40px;
+  background: #f0f4ff;
+  border-top: 1px solid #dce9fd;
+}
+
+.obj-exp__trace-dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 3px 14px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.obj-exp__trace-dl dt {
+  color: #6b778c;
+  font-weight: 500;
+}
+
+.obj-exp__trace-dl dd {
+  margin: 0;
+  color: #172b4d;
+  word-break: break-all;
+}
+
+.obj-exp__trace-dl dd code {
+  font-family: monospace;
+  font-size: 11px;
+  background: #dce9fd;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+/* ── Loading skeleton ────────────────────────────────────────── */
+.obj-exp__skeleton-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #f4f5f7;
+}
+
+.obj-exp__skeleton-badge,
+.obj-exp__skeleton-name,
+.obj-exp__skeleton-btn {
+  background: #ebecf0;
+  border-radius: 4px;
+  animation: obj-exp-pulse 1.4s ease-in-out infinite;
+}
+
+.obj-exp__skeleton-badge {
+  width: 58px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.obj-exp__skeleton-name {
+  flex: 1;
+  height: 13px;
+}
+
+.obj-exp__skeleton-btn {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+}
+
+/* ── Empty / error states ────────────────────────────────────── */
+.obj-exp__empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 24px;
+  text-align: center;
+  font-size: 13px;
+  color: #6b778c;
+  line-height: 1.55;
+}
+
+.obj-exp__error {
+  margin: 16px 20px;
+  padding: 10px 14px;
+  background: #ffebe6;
+  border: 1px solid #ffbdad;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #de350b;
+  line-height: 1.45;
+}
+
+@keyframes obj-exp-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.45; }
+}

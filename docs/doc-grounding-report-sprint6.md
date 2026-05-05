@@ -1,5 +1,10 @@
 # Doc Grounding Report — Sprint 6 (Sprint 1 Phase 2)
 
+> **Historical record.** This report was accurate at the time it was written.
+> The `src/workload/http/JiraHttpClient.ts` line references cited here
+> (`:10`, `:34`, `:44`, `:50`, `:71`, `:83`, `:224-234`) were re-verified as
+> still correct in the Sprint 9 doc-grounding pass (see `doc-grounding-report-sprint9.md`).
+
 _Generated: 2026-05-04 | Author: qa-engineer-persona_
 _Scope: DEMO.md, INSTALL.md, CHANGELOG.md, ARCHITECTURE.md_
 _Sprint focus: Sprint 1 Phase 2 additions — Backup Engine Foundations, Project Discovery, JSM Detection, Discover route, smoke-discover probe_

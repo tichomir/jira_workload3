@@ -763,6 +763,327 @@ the transition sprint.
 
 ---
 
+## Inventory Browse Flow
+
+### Overview
+
+The Inventory Browse Flow delivers the operator-facing Inventory sidebar and
+Object Explorer. It reads exclusively from the SQLite-backed snapshot manifest
+produced by `JiraWorkload.snapshot()` — it **never** issues calls to the
+Atlassian REST API at browse time.
+
+### Data Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  Snapshot Phase  (JiraWorkload.snapshot)                            │
+│  CaptureOrchestrator persists:                                      │
+│    backup_manifests.manifest_json  ← BackupManifest (JSON blob)     │
+│    backup_jobs.completed_at        ← ISO-8601 timestamp             │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │ SQLite read  (zero Atlassian calls)
+                               ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  InventoryRepository                                                │
+│  (src/workload/inventory/InventoryRepository.ts)                    │
+│                                                                     │
+│  getObjectTypes(connectionId)                                       │
+│    ► loads latest BackupManifest for connection                     │
+│    ► counts each type; strips JSM-deferred project entries          │
+│    ► returns InventoryObjectTypesResponse                           │
+│                                                                     │
+│  getItems(connectionId, type, opts)                                 │
+│    ► loads manifest (optionally pinned by backupPointId)            │
+│    ► slices the relevant collection with limit/offset               │
+│    ► projects each raw record to InventoryItem / IssueInventoryItem │
+│    ► filters out items belonging to JSM-deferred projects           │
+│    ► returns InventoryItemsResponse                                 │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+                ┌──────────────┴──────────────┐
+                ▼                             ▼
+   GET /api/inventory            GET /api/inventory/:type
+   (src/routes/inventory.ts)     (src/routes/inventory.ts)
+                │                             │
+                ▼                             ▼
+   Inventory Sidebar              Object Explorer
+   (React — Phase 1 UI)           (React — Phase 1 UI)
+   4 types: Issue, Project,        Pagination, filter facets,
+   Board, Sprint (Issues default)  search, traceability click
+```
+
+### Boundary Rule
+
+`InventoryRepository` reads only from the SQLite tables written by the snapshot
+phase (`backup_manifests`, `backup_jobs`). It must never construct or execute any
+HTTP request to the Atlassian REST API. All inventory data reflects the state
+captured during the most recent successful snapshot for the given `connectionId`.
+
+### JSM Exclusion Rule
+
+Projects, Issues, Boards, and Sprints that belong to a project where
+`projectTypeKey === 'service_desk'` are **excluded** from all inventory responses:
+
+- `objectTypes[].count` in `GET /api/inventory` never includes JSM items.
+- `items[]` in `GET /api/inventory/:type` never contains JSM items.
+
+The driving manifest field is `BackupManifest.jsmDeferredProjects[]`. Any item
+whose `projectId` appears in that array is filtered inside `InventoryRepository`
+before the response is built. Callers cannot override this filter.
+
+---
+
+### GET /api/inventory (expanded)
+
+This sprint expands the stub response (previously documented in §API Surface)
+with the full `objectTypes[]` array. The route handler is
+`src/routes/inventory.ts`.
+
+**Query parameters:**
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `connectionId` | Yes | The `connectionId` of the target connection |
+
+**Success response (200) — `InventoryObjectTypesResponse`:**
+
+```typescript
+/** Stable object-type identifier; used as the :type path param. */
+type InventoryObjectType =
+  | 'Issue'
+  | 'Project'
+  | 'Board'
+  | 'Sprint'
+  | 'Workflow'
+  | 'CustomField';
+
+interface InventoryObjectTypeEntry {
+  /** Stable machine identifier — used as the :type path param. */
+  type:         InventoryObjectType;
+  /** Human-readable label for the sidebar row. */
+  displayName:  string;
+  /** Count of backed-up objects of this type, excluding JSM-deferred items. */
+  count:        number;
+  /**
+   * ISO-8601 timestamp of the most recent snapshot that captured this type.
+   * null when the type has never been snapshotted (e.g. snapshot not yet run).
+   */
+  lastBackupAt: string | null;
+  /** true when ≥1 JSM project was excluded from this type's count. */
+  jsmExcluded:  boolean;
+}
+
+interface InventoryObjectTypesResponse {
+  /** UUID of the most recent BackupManifest for this connection. */
+  manifestId:  string;
+  /** ISO-8601 timestamp when the snapshot that produced this manifest completed. */
+  completedAt: string;
+  /** One entry per object type, in the order: Issue, Project, Board, Sprint, Workflow, CustomField. */
+  objectTypes: InventoryObjectTypeEntry[];
+}
+```
+
+**Example:**
+```json
+{
+  "manifestId": "7f3d1234-...",
+  "completedAt": "2026-05-04T03:00:00Z",
+  "objectTypes": [
+    { "type": "Issue",       "displayName": "Issues",        "count": 1248, "lastBackupAt": "2026-05-04T03:00:00Z", "jsmExcluded": false },
+    { "type": "Project",     "displayName": "Projects",      "count": 5,    "lastBackupAt": "2026-05-04T03:00:00Z", "jsmExcluded": false },
+    { "type": "Board",       "displayName": "Boards",        "count": 3,    "lastBackupAt": "2026-05-04T03:00:00Z", "jsmExcluded": false },
+    { "type": "Sprint",      "displayName": "Sprints",       "count": 12,   "lastBackupAt": "2026-05-04T03:00:00Z", "jsmExcluded": false },
+    { "type": "Workflow",    "displayName": "Workflows",     "count": 4,    "lastBackupAt": "2026-05-04T03:00:00Z", "jsmExcluded": false },
+    { "type": "CustomField", "displayName": "Custom Fields", "count": 22,   "lastBackupAt": "2026-05-04T03:00:00Z", "jsmExcluded": false }
+  ]
+}
+```
+
+**Sidebar rendering rule (T8 §2, §3):** The Phase 1 sidebar renders exactly four
+object types in fixed order — Issues (default selection), Projects, Boards,
+Sprints. Workflow and CustomField entries are included in the API response for
+future use but are not rendered in the Phase 1 sidebar.
+
+**Error responses:**
+
+| Status | `error` field | Meaning |
+|--------|--------------|---------|
+| `400` | `missing_required_fields` | `connectionId` query parameter absent |
+| `404` | `connection_not_found` | No connection matches the supplied `connectionId` |
+| `404` | `no_manifest_found` | Connection exists but no snapshot has been run |
+
+---
+
+### GET /api/inventory/:type
+
+Returns a paginated list of backed-up objects of a single type. The route
+handler is `src/routes/inventory.ts`.
+
+**Path parameter:**
+
+| Parameter | Values |
+|-----------|--------|
+| `:type` | `Issue` \| `Project` \| `Board` \| `Sprint` \| `Workflow` \| `CustomField` |
+
+**Query parameters:**
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `connectionId` | Yes | — | `connectionId` of the target connection |
+| `backupPointId` | **Yes** | — | UUID of the backup point to query; returned by `GET /api/inventory` as `backupPointId` |
+| `limit` | No | `50` | Page size; max `200` |
+| `offset` | No | `0` | Zero-based offset into the result set |
+
+**Success response (200) — `InventoryItemsResponse`:**
+
+```typescript
+interface InventoryPagination {
+  limit:  number;   // effective page size used
+  offset: number;   // zero-based offset
+  total:  number;   // total matched items (drives page-control rendering)
+}
+
+/** Base item shape shared by all object types. */
+interface InventoryItem {
+  /** Atlassian numeric object ID (string form). */
+  id:                   string;
+  /**
+   * Human-readable label rendered in the Object Explorer row.
+   * Per-type format:
+   *   Issue       → IssueRecord.key verbatim, e.g. "PROJ-42"  (see displayName invariant below)
+   *   Project     → project name
+   *   Board       → board name
+   *   Sprint      → sprint name
+   *   Workflow    → workflow name
+   *   CustomField → field display name
+   */
+  displayName:          string;
+  /**
+   * Deletion-diff badge relative to the previous backup point.
+   * Sourced from ProjectRecord.changeBadge; Issues inherit their project's badge.
+   * Enum: 'added' | 'modified' | 'deleted' | 'unchanged'
+   * Source: src/workload/backup/types.ts :: ChangeBadge
+   */
+  changeBadge:          'added' | 'modified' | 'deleted' | 'unchanged';
+  /** UUID of the backup point under which this item was captured. Single-click traceability (T5 §6.2). */
+  backupPointId:        string;
+  /** ISO-8601 timestamp when this item was captured. Single-click traceability. */
+  backupPointTimestamp: string;
+}
+
+/**
+ * Issue-specific item shape.
+ *
+ * displayName MUST equal IssueRecord.key verbatim (e.g. "PROJ-42").
+ * InventoryRepository populates displayName directly from the persisted
+ * IssueRecord.key — it does NOT construct the key from parts.
+ *
+ * projectKey and issueNumber are extracted from the key string (split on '-')
+ * for filter/sort use only.
+ */
+interface IssueInventoryItem extends InventoryItem {
+  /** Jira project key, e.g. "PROJ". Used for project-based filtering. */
+  projectKey:  string;
+  /** Numeric part of the issue key (42 for "PROJ-42"). Used for numeric sort. */
+  issueNumber: number;
+  /** Issue summary text — rendered as secondary label in the Object Explorer row. */
+  summary:     string;
+}
+
+interface InventoryItemsResponse {
+  items:      InventoryItem[];   // IssueInventoryItem[] when type === 'Issue'
+  pagination: InventoryPagination;
+}
+```
+
+**Issue `displayName` invariant:** For Issues, `displayName` is always
+`IssueRecord.key` verbatim (e.g. `"PROJ-42"`). The format is
+`<PROJECT_KEY>-<N>` where `PROJECT_KEY` is the Jira project key and `N` is the
+sequential issue number. `InventoryRepository` reads this directly from the
+persisted `IssueRecord.key` field — it never reconstructs the key from parts.
+
+**`changeBadge` enum** (source: `src/workload/backup/types.ts :: ChangeBadge`):
+
+| Value | Meaning |
+|-------|---------|
+| `added` | Object is present in current manifest; absent in previous |
+| `modified` | Object present in both; ≥1 tracked field differs |
+| `deleted` | Object present in previous manifest; absent in current |
+| `unchanged` | Object present in both; all tracked fields identical |
+
+**Error responses:**
+
+| Status | `error` field | Meaning |
+|--------|--------------|---------|
+| `400` | `missing_required_fields` | `connectionId` absent or `:type` is not a valid `InventoryObjectType` |
+| `404` | `connection_not_found` | No connection matches the supplied `connectionId` |
+| `404` | `backup_point_not_found` | Supplied `backupPointId` does not exist for this connection |
+
+---
+
+### Inventory Handler Functions
+
+Inventory logic lives inline in `src/routes/inventory.ts` (no separate repository class).
+
+```typescript
+/** Pure helper — builds the objectTypes[] response from a manifest (or null). Directly testable. */
+export function buildInventoryResponse(manifest: BackupManifest | null): InventoryResponse;
+
+/** Route handler for GET /api/inventory — returns objectTypes[] sourced from the latest manifest. */
+export function handleGetInventory(req: Request, res: Response): void;
+
+/** Route handler for GET /api/inventory/:type — returns paginated items from backup_point_items. */
+export function handleGetInventoryByType(req: Request, res: Response): void;
+```
+
+**Data sourcing per type:**
+
+| Object Type | Primary manifest source | ID field |
+|-------------|------------------------|---------|
+| `Issue` | Per-issue rows in the backup store; `IssueRecord` from `backup_manifests` | `IssueRecord.id` |
+| `Project` | `BackupManifest.projects[]` — `ProjectRecord` array | `ProjectRecord.projectId` |
+| `Board` | `ProjectRecord.boardIds[]` aggregated across all non-JSM projects | Board ID string |
+| `Sprint` | `ProjectRecord.sprintIds[]` aggregated across all non-JSM projects | Sprint ID string |
+| `Workflow` | Phase result stored with manifest (Workflow capture phase) | Workflow ID |
+| `CustomField` | `BackupManifest.fieldContexts[]` — `FieldContextRecord` array | `FieldContextRecord.fieldId` |
+
+**Key files:**
+
+| File | Purpose |
+|------|---------|
+| `src/routes/inventory.ts` | Express router + inline repository logic — handles both `GET /api/inventory` and `GET /api/inventory/:type`; exports `buildInventoryResponse()` as a pure testable helper |
+| `src/platform/contracts.ts` | Extended with `ObjectTypeEntry`, `InventoryResponse`; item-level shapes (`InventoryItem`, `InventoryItemsResponse`) are defined locally in `src/ui/components/ObjectExplorer.tsx` |
+
+### Search and Filter Capabilities (Object Explorer)
+
+Documented here for architectural completeness; UI implementation is a separate
+sprint task.
+
+| Capability | Applies to | Rule |
+|-----------|------------|------|
+| Exact-match Issue key search | Issues | Match `IssueRecord.key` exactly, case-insensitive |
+| Tokenized case-insensitive summary search | Issues | Tokenise query on whitespace; all tokens must appear in `IssueRecord.summary` |
+| Tokenised partial-match attachment filename | Attachments (via Issues) | Each token matched as a substring of `AttachmentRecord.filename` |
+| Body-content search | **Disabled** | Full-text search across ADF description/comment text is explicitly disabled in Phase 1 |
+| Filter facets | Issues | `status`, `issueType`, `assignee`, `sprint`, `board`, `label`, `priority`, `updated` date-range |
+
+Body-content search (ADF `description` and `comments[].body`) is explicitly
+disabled in Phase 1 (T8 §3). The route must return `400 body_search_disabled`
+if a body-search parameter is passed.
+
+### Single-Click Traceability
+
+Every `InventoryItem` carries `backupPointId` and `backupPointTimestamp`. A
+single UI click on any Object Explorer row navigates to its backup-point detail,
+showing the backup-point UUID, completion timestamp, and job status. This
+satisfies the traceability requirement (T5 §6.2, T8 §3).
+
+- For Issues: `backupPointId` is sourced from `IssueRecord.backupPointId`.
+- For all other types: `backupPointId` is sourced from the
+  `backup_jobs.backupPointId` column that owns the manifest.
+
+---
+
 ## API Surface (T0 §2)
 
 The Platform Stub exposes four endpoint groups. All paths are mounted under

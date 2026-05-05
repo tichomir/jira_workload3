@@ -1,5 +1,9 @@
 # Doc Grounding Report — Sprint 3
 
+> **Historical record.** This report was accurate at the time it was written.
+> All line references and file paths were re-verified as still correct in the
+> Sprint 9 doc-grounding pass (see `doc-grounding-report-sprint9.md`).
+
 _Generated: 2026-05-04 | Author: qa-engineer-persona_
 _Scope: README.md, INSTALL.md, DEMO.md, ARCHITECTURE.md, CHANGELOG.md_
 

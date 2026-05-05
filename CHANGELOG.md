@@ -4,6 +4,86 @@ All notable changes are documented here by sprint.
 
 ---
 
+## [Phase 3 Sprint 1] — 2026-05-04 — Inventory API & Sidebar (Protected Object Browse Flow)
+
+### Added
+
+#### `GET /api/inventory` — expanded response — `src/routes/inventory.ts`
+- Response now returns an `objectTypes[]` array (replaces the Phase 1 stub `counts` object).
+- Each entry: `{ type, displayName, count, lastBackupAt }` where `type` is one of
+  `Issue` | `Project` | `Board` | `Sprint` | `Workflow` | `CustomField`.
+- `count` is sourced from the most recent `BackupManifest` for the `connectionId`.
+- **JSM exclusion**: only `manifest.projects` (non-`service_desk`) contribute to counts;
+  `manifest.jsmDeferredProjects` entries are excluded from all types (T8 §2, §3).
+- Board IDs and Sprint IDs are deduplicated across all non-JSM projects before counting.
+- `lastBackupAt` is set to `manifest.discoveredAt`; `null` when no manifest exists.
+- `backupPointId` (the manifest UUID) is returned alongside `objectTypes[]` to seed the
+  Object Explorer with the most recent backup point.
+- Structured log: `[inventory] connectionId=<id> backupPointId=<id|none> jsmExcludedProjects=<n>`
+- `buildInventoryResponse(manifest)` — pure helper; directly testable in isolation.
+- Error responses: `400 missing_required_fields` (no `connectionId`),
+  `404 connection_not_found`, `404 no_manifest_found`.
+
+#### `GET /api/inventory/:type` — paginated item list — `src/routes/inventory.ts`
+- Path parameter `:type` must be one of: `Issue`, `Project`, `Board`, `Sprint`.
+  Returns `400 invalid_type` for any other value.
+- Required query params: `connectionId`, `backupPointId`.
+- Optional: `limit` (default 50, max 200), `offset` (default 0).
+- Reads `backup_point_items` rows for `(connectionId, backupPointId, objectType)`.
+- Response: `{ items[], pagination: { limit, offset, total } }`.
+- Each item: `{ id, displayName, backupPointId, backupPointTimestamp, changeBadge, summary? }`.
+  - `summary` is included (and non-empty) only for `Issue` items.
+- **Single-click traceability**: every item carries `backupPointId` (UUID) and
+  `backupPointTimestamp` (ISO-8601), satisfying T5 §6.2 traceability (T8 §3).
+- Error responses: `400 missing_required_fields`, `404 connection_not_found`,
+  `404 backup_point_not_found`.
+
+#### Database migration — `src/db/migrations/011_inventory_items.sql`
+- `backup_point_items` table — per-item inventory rows for `Issue`, `Project`, `Board`, `Sprint`.
+- Columns: `rowId` (autoincrement PK), `connectionId` (FK → `connections`),
+  `backupPointId` (FK → `backup_manifests`), `objectType` (checked enum), `itemId`,
+  `displayName`, `summary` (nullable), `changeBadge` (checked enum, default `unchanged`),
+  `capturedAt` (ISO-8601).
+- Unique index on `(backupPointId, objectType, itemId)`; lookup index on
+  `(connectionId, backupPointId, objectType)`.
+- Both FKs cascade-delete when the parent connection or manifest row is removed.
+
+#### Inventory Sidebar — `src/ui/components/InventorySidebar.tsx`
+- Renders four object types in fixed order: Issues (default), Projects, Boards, Sprints.
+- Calls `GET /api/inventory?connectionId=<id>` on mount; renders skeleton rows during load.
+- Each row: object-type label, count badge, relative timestamp ("2h ago"); `title` tooltip
+  shows full ISO-8601 timestamp on hover.
+- **"No backup yet" banner** when all four types have `lastBackupAt: null`.
+- `onSelect(type)` callback drives the active type in the parent `InventoryPage`.
+- `onInventoryLoad({ backupPointId })` passes the manifest UUID up to seed `ObjectExplorer`.
+
+#### Object Explorer — `src/ui/components/ObjectExplorer.tsx`
+- Paginated browse panel for a single object type; page size 50 items per page.
+- Calls `GET /api/inventory/:type?connectionId&backupPointId&limit&offset` when
+  `backupPointId` is non-null.
+- Pagination bar: "Showing X–Y of N" with ← Prev / Next → buttons; disabled at boundaries.
+- Each item row: change badge (`Added` | `Modified` | `Deleted` | `Unchanged`), display name,
+  optional summary (Issues only), and a ⊕ trace button.
+- **Trace panel**: clicking ⊕ expands an inline panel showing `Backup Point ID` (UUID) and
+  `Captured At` (formatted local timestamp). Click ⊕ again to collapse.
+- In-flight requests are cancelled on navigation (offset, type, or backup-point change).
+
+#### API fetch utility — `src/ui/lib/apiFetch.ts`
+- `apiFetch<T>(path, options?)` — typed wrapper around `fetch`; throws `ApiError(status)`
+  on non-2xx responses. Used by `InventorySidebar` and `ObjectExplorer`.
+
+#### Inventory page wiring — `src/App.tsx`
+- `/inventory` route added; renders `InventoryPage` composing sidebar and explorer side-by-side.
+- Auto-selects the first connected site via `GET /api/connections` on mount.
+- `selectedType` state defaults to `'Issue'`; `backupPointId` is received from the sidebar
+  `onInventoryLoad` callback.
+
+### No new environment variables
+No new environment variables or ports are introduced in this sprint.
+`INSTALL.md` is unchanged. See `.env.example` for the full documented key set.
+
+---
+
 ## [Sprint 3 — Phase 2] — 2026-05-04 — Attachments, Manifest Diff, Policies & Progress Telemetry
 
 ### Added

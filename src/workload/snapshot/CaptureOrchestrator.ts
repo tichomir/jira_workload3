@@ -131,6 +131,7 @@ export class CaptureOrchestrator implements ICaptureOrchestrator {
             try {
               const payload = assembleIssuePayload(rawIssue, allCustomFieldIds);
               assertCoverageInvariant(payload, allCustomFieldIds);
+              options.onIssueCaptured?.(payload.key, payload.summary);
 
               // Download attachment binaries — per-attachment errors are counted
               // as item-level errors but do not prevent the issue from being captured.

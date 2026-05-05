@@ -87,19 +87,25 @@ export interface CloudIdMismatchError {
 // GET /api/inventory
 // ---------------------------------------------------------------------------
 
+/** One entry in the objectTypes array of InventoryResponse. */
+export interface ObjectTypeEntry {
+  type: 'Project' | 'Issue' | 'Board' | 'Sprint' | 'Workflow' | 'CustomField';
+  displayName: string;
+  count: number;
+  /** ISO-8601 timestamp of the most recent backup point, or null when none exists. */
+  lastBackupAt: string | null;
+}
+
 /**
  * Response for GET /api/inventory?connectionId=<id> (HTTP 200).
- * Maps to DiscoverResult from PlatformWorkloadInterface.discover().
+ * Returns per-object-type counts sourced from the most recent backup-point
+ * manifest. JSM (service_desk) projects and their owned objects are excluded
+ * from all counts. lastBackupAt is null when no backup point exists.
  */
 export interface InventoryResponse {
-  manifestId: string;
-  completedAt: string; // ISO-8601
-  counts: {
-    projects: number;
-    issues: number;
-    boards: number;
-    sprints: number;
-  };
+  objectTypes: ObjectTypeEntry[];
+  /** ID of the most recent backup point; null when no backup exists. */
+  backupPointId?: string | null;
 }
 
 // ---------------------------------------------------------------------------

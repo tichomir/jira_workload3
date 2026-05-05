@@ -139,6 +139,8 @@ export class JiraWorkload implements PlatformWorkloadInterface {
     const emitter = new ProgressEmitter(manifestId, manifestId, connection.connectionId);
     emitter.start();
 
+    const capturedIssues: Array<{ key: string; summary: string }> = [];
+
     let captureResult;
     try {
       captureResult = await orchestrator.runCapture(
@@ -150,6 +152,7 @@ export class JiraWorkload implements PlatformWorkloadInterface {
           projectScope: manifest.projectScope,
           selectedProjectKeys: manifest.selectedProjectKeys,
           attachmentBaseDir: process.env['DCC_ATTACHMENT_DIR'],
+          onIssueCaptured: (key, summary) => capturedIssues.push({ key, summary }),
         },
         (event) => {
           emitter.emit(event);
@@ -177,13 +180,14 @@ export class JiraWorkload implements PlatformWorkloadInterface {
     // to compute the deletion-diff. Null on the first-ever backup run.
     const prevRow = db
       .prepare(
-        `SELECT manifestJson FROM backup_manifests
+        `SELECT id, manifestJson FROM backup_manifests
           WHERE connectionId = ? AND id != ?
           ORDER BY createdAt DESC
           LIMIT 1`
       )
-      .get(connection.connectionId, manifestId) as { manifestJson: string } | undefined;
+      .get(connection.connectionId, manifestId) as { id: string; manifestJson: string } | undefined;
 
+    const prevManifestId: string | undefined = prevRow?.id;
     const previousManifest: BackupManifest | null = prevRow
       ? (JSON.parse(prevRow.manifestJson) as BackupManifest)
       : null;
@@ -210,6 +214,55 @@ export class JiraWorkload implements PlatformWorkloadInterface {
       JSON.stringify(updatedManifest),
       manifestId
     );
+
+    // Populate backup_point_items for inventory browsing.
+    // changeBadge rule: "unchanged when no prior manifest" (T3 inventory spec).
+    const hasPrev = prevManifestId !== undefined;
+
+    let prevIssueKeys = new Set<string>();
+    let prevBoardIds = new Set<string>();
+    let prevSprintIds = new Set<string>();
+
+    if (hasPrev) {
+      const prevItems = db
+        .prepare('SELECT objectType, itemId FROM backup_point_items WHERE backupPointId = ?')
+        .all(prevManifestId!) as { objectType: string; itemId: string }[];
+      for (const item of prevItems) {
+        if (item.objectType === 'Issue') prevIssueKeys.add(item.itemId);
+        else if (item.objectType === 'Board') prevBoardIds.add(item.itemId);
+        else if (item.objectType === 'Sprint') prevSprintIds.add(item.itemId);
+      }
+    }
+
+    const ts = captureResult.completedAt;
+    const insertItem = db.prepare(
+      `INSERT OR IGNORE INTO backup_point_items
+         (connectionId, backupPointId, objectType, itemId, displayName, summary, changeBadge, capturedAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+
+    db.transaction(() => {
+      for (const issue of capturedIssues) {
+        const badge = hasPrev ? (prevIssueKeys.has(issue.key) ? 'unchanged' : 'added') : 'unchanged';
+        insertItem.run(connection.connectionId, manifestId, 'Issue', issue.key, issue.key, issue.summary, badge, ts);
+      }
+
+      for (const project of updatedManifest.projects) {
+        if (project.changeBadge === 'deleted') continue;
+        const badge = hasPrev ? project.changeBadge : 'unchanged';
+        insertItem.run(connection.connectionId, manifestId, 'Project', project.projectId, project.projectKey, project.projectName, badge, ts);
+
+        for (const boardId of project.boardIds) {
+          const bBadge = hasPrev ? (prevBoardIds.has(boardId) ? 'unchanged' : 'added') : 'unchanged';
+          insertItem.run(connection.connectionId, manifestId, 'Board', boardId, boardId, null, bBadge, ts);
+        }
+
+        for (const sprintId of project.sprintIds) {
+          const sBadge = hasPrev ? (prevSprintIds.has(sprintId) ? 'unchanged' : 'added') : 'unchanged';
+          insertItem.run(connection.connectionId, manifestId, 'Sprint', sprintId, sprintId, null, sBadge, ts);
+        }
+      }
+    })();
 
     return {
       backupPointId: manifestId,

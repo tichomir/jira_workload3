@@ -1,0 +1,155 @@
+/* ── Inventory Sidebar ───────────────────────────────────────── */
+.inv-sb {
+  width: 220px;
+  flex-shrink: 0;
+  background: #ffffff;
+  border: 1px solid #dfe1e6;
+  border-radius: 8px;
+  padding: 16px 0 8px;
+  box-shadow: 0 1px 3px rgba(9, 30, 66, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.inv-sb__header {
+  font-size: 11px;
+  font-weight: 700;
+  color: #6b778c;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  padding: 0 16px 10px;
+  border-bottom: 1px solid #f4f5f7;
+  margin-bottom: 4px;
+}
+
+/* ── Rows ────────────────────────────────────────────────────── */
+.inv-sb__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.inv-sb__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 9px 16px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  gap: 8px;
+  border-left: 3px solid transparent;
+  transition: background 0.1s ease, border-color 0.1s ease;
+}
+
+.inv-sb__row:hover {
+  background: #f4f5f7;
+}
+
+.inv-sb__row--selected {
+  border-left-color: #0052cc;
+  background: #e8f0fe;
+}
+
+.inv-sb__row--selected:hover {
+  background: #dce9fd;
+}
+
+.inv-sb__label {
+  font-size: 14px;
+  font-weight: 500;
+  color: #172b4d;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.inv-sb__row--selected .inv-sb__label {
+  color: #0052cc;
+  font-weight: 600;
+}
+
+.inv-sb__right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  flex-shrink: 0;
+}
+
+.inv-sb__count {
+  font-size: 13px;
+  font-weight: 600;
+  color: #172b4d;
+  font-variant-numeric: tabular-nums;
+}
+
+.inv-sb__row--selected .inv-sb__count {
+  color: #0052cc;
+}
+
+.inv-sb__backup-time {
+  font-size: 10px;
+  color: #6b778c;
+  white-space: nowrap;
+  cursor: help;
+}
+
+/* ── Empty / no-backup banner ────────────────────────────────── */
+.inv-sb__empty-banner {
+  margin: 0 12px 8px;
+  padding: 7px 10px;
+  background: #f4f5f7;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #6b778c;
+  text-align: center;
+}
+
+/* ── Error state ─────────────────────────────────────────────── */
+.inv-sb__error {
+  margin: 8px 12px;
+  padding: 10px 12px;
+  background: #ffebe6;
+  border: 1px solid #ffbdad;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #de350b;
+  line-height: 1.45;
+}
+
+/* ── Loading skeleton ────────────────────────────────────────── */
+.inv-sb__skeleton {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 16px;
+  gap: 8px;
+}
+
+.inv-sb__skeleton-label,
+.inv-sb__skeleton-count {
+  background: #ebecf0;
+  border-radius: 4px;
+  animation: inv-sb-pulse 1.4s ease-in-out infinite;
+}
+
+.inv-sb__skeleton-label {
+  height: 14px;
+  width: 72px;
+}
+
+.inv-sb__skeleton-count {
+  height: 14px;
+  width: 28px;
+}
+
+@keyframes inv-sb-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.45; }
+}
