@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom';
 import { WorkloadCard } from './ui/components/WorkloadCard';
 import { ConnectionsList } from './ui/pages/ConnectionsList';
 import { InventorySidebar, type SidebarObjectType } from './ui/components/InventorySidebar';
 import { ObjectExplorer } from './ui/components/ObjectExplorer';
+import { RestoreWizard } from './platform/ui/restore/RestoreWizard';
+import { RestoreJobProgress } from './platform/ui/restore/RestoreJobProgress';
 
 export function App() {
   return (
@@ -11,6 +13,8 @@ export function App() {
       <Routes>
         <Route path="/connections" element={<ConnectionsPage />} />
         <Route path="/inventory" element={<InventoryPage />} />
+        <Route path="/restore" element={<RestorePage />} />
+        <Route path="/restore-jobs/:jobId" element={<RestoreJobProgressPage />} />
         <Route path="*" element={<Navigate to="/connections" replace />} />
       </Routes>
     </BrowserRouter>
@@ -97,3 +101,20 @@ function InventoryPage() {
   );
 }
 
+function RestorePage() {
+  return (
+    <main style={{ display: 'flex', justifyContent: 'center', padding: '48px 16px' }}>
+      <RestoreWizard />
+    </main>
+  );
+}
+
+function RestoreJobProgressPage() {
+  const { jobId } = useParams<{ jobId: string }>();
+  if (!jobId) return null;
+  return (
+    <main style={{ display: 'flex', justifyContent: 'center', padding: '48px 16px' }}>
+      <RestoreJobProgress jobId={jobId} />
+    </main>
+  );
+}

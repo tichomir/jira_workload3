@@ -107,3 +107,23 @@ curl -sf http://localhost:${PORT:-3000}/api/connections | python3 -m json.tool
 
 An empty JSON array `[]` confirms the server is healthy and the database is
 initialised.
+
+## 6. API surface
+
+All endpoints are served by the Express API server (`npm run server`) on
+`http://localhost:${PORT}` (default 3000).
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/connections` | List all connected Jira sites |
+| `POST` | `/api/connections` | Connect a Jira site (OAuth or manual) |
+| `GET` | `/api/connections/:id/probes` | Latest permission-probe results for a connection |
+| `GET` | `/api/oauth/authorize` | Start the OAuth 3LO authorization flow |
+| `GET` | `/api/oauth/callback` | OAuth callback — exchanges code for tokens |
+| `POST` | `/api/discover` | Run project discovery for a connection |
+| `POST` | `/api/policies` | Create or update a backup policy |
+| `GET` | `/api/jobs/:id` | Get backup job status and last heartbeat event |
+| `GET` | `/api/inventory` | Object-type counts from the most recent backup manifest |
+| `GET` | `/api/inventory/:type` | Paginated object list (`Issue`, `Project`, `Board`, `Sprint`) |
+| `POST` | `/api/restore-jobs` | Create and launch a restore job |
+| `GET` | `/api/restore-jobs/:id/events` | SSE stream of restore phase events for a job |

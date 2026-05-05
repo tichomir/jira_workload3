@@ -4,6 +4,90 @@ All notable changes are documented here by sprint.
 
 ---
 
+## [Phase 4 Sprint 1] — 2026-05-05 — Restore Wizard Foundation & Dependency-Ordered Orchestrator
+
+### Added
+
+#### Restore Wizard UI — `src/platform/ui/restore/RestoreWizard.tsx`
+- Four-step wizard: (1) Select objects, (2) Conflict mode, (3) Destination, (4) Review & confirm.
+- **Step 1** — connection selector, backup-point display, and paginated object list with
+  Issue / Project / Board / Sprint tabs; per-item and select-all checkboxes.
+- **Step 2** — conflict mode radio group: **Skip** (default), Override, Ask per conflict (T5 §5.1).
+- **Step 3** — destination selector: Original location, Alternate location (same Jira site),
+  Export / Browser Download. Alternate location reveals a target project key field.
+  An info banner explicitly states that cross-site / cross-tenant restore is not supported
+  in Phase 1 (T5 §5.2).
+- **Step 4** — review panel summarising connection, backup point, object count, conflict mode,
+  and destination; **Start restore** button submits to `POST /api/restore-jobs`.
+- Navigation guards: Next is disabled until each step's required fields are satisfied.
+- On successful job creation, navigates to `/restore-jobs/{jobId}` (progress view; Sprint 2).
+
+#### Restore type contracts — `src/workload/restore/types.ts`
+- `ConflictMode` — `'override' | 'skip' | 'ask'`; default `'skip'` (T5 §5.1).
+- `RestoreDestinationType` — `'original' | 'alternate' | 'export'`; cross-site restore
+  explicitly blocked at the API validation layer (T5 §5.2).
+- `RestorePhase` enum — canonical write-dependency order:
+  `site-reference-data → project → workflow → custom-field → board → sprint → issue →
+  comment-attachment-subtask-issuelink` (T1 §1, T5 §5.2).
+- `RESTORE_PHASE_ORDER` — immutable phase sequence; every orchestrator implementation must
+  iterate in exactly this order.
+- `RestoreSseEvent` — discriminated union: `phase_started`, `phase_completed`,
+  `phase_progress`, `job_failed`, `job_completed`.
+  `job_failed` always carries `{ error: { code: 'dependency_phase_failed', phase, message } }`;
+  subsequent phases are never started after this event.
+- `RestoreJob`, `RestoreRunOptions`, `RestoreRunResult`, `RestorePhaseResult`,
+  `IRestoreOrchestrator` — full boundary contracts for the restore orchestrator.
+
+#### Restore orchestrator — `src/workload/restore/RestoreOrchestrator.ts`
+- `RestoreOrchestrator.runRestore(options, onEvent)` — iterates `RESTORE_PHASE_ORDER` strictly
+  in sequence; on any phase handler throw, emits `job_failed { error.code:
+  'dependency_phase_failed' }` and halts — subsequent phases are not started (T1 §1, T5 §5.2).
+- Emits `phase_started` → `phase_completed` per phase in exact dependency order; stream always
+  ends with `job_completed` or `job_failed`.
+- `errorCount > 0` at completion maps to `completed_with_errors`; UI must display
+  "Completed with N errors", never "Completed successfully" (T5 §6.2b).
+- Stub phase handlers registered for all 8 phases — concrete implementations added in
+  subsequent sprints; the orchestrator is exercisable end-to-end from Sprint 1.
+
+#### In-memory event bus — `src/workload/restore/eventBus.ts`
+- `publish(jobId, event)` — buffers the event and notifies all live SSE subscribers.
+- `subscribe(jobId, onEvent)` — replays all buffered events synchronously before returning
+  the unsubscribe function, ensuring late-connecting SSE clients receive the full event
+  sequence (T5 §6.2).
+- `clearJob(jobId)` — removes buffer and listener set for a completed job.
+
+#### `POST /api/restore-jobs` — `src/routes/restore-jobs.ts`
+- Creates a restore job, persists it to `restore_jobs`, and launches
+  `RestoreOrchestrator.runRestore()` asynchronously (fire-and-forget).
+- Required body fields: `connectionId`, `backupPointId`, `destination`, `selection` (array).
+- Optional: `conflictMode` (default `'skip'`), `alternateDestination`
+  (`{ cloudId: string, projectKey: string }`).
+- Cross-site restore guard: rejects `targetCloudId` or `alternateDestination.cloudId` that
+  differ from the connection's `cloudId` with HTTP 400 `cross_site_restore_not_supported`.
+- Returns HTTP 201 `{ jobId, status: 'queued' }`.
+- HTTP 400 on missing required fields or invalid `conflictMode` / `destination` values.
+- HTTP 404 when `connectionId` is not found.
+
+#### `GET /api/restore-jobs/:id/events` — `src/routes/restore-jobs.ts`
+- Server-Sent Events stream for a restore job (`Content-Type: text/event-stream`).
+- Replays all buffered events immediately so late-connecting clients receive the full
+  event sequence.
+- SSE comment heartbeat every 9 s (≤10 s interval per T5 §6.2); stream closes automatically
+  after `job_completed` or `job_failed`.
+- HTTP 404 when the job ID is not found.
+
+#### Database migration — `src/db/migrations/014_restore_jobs.sql`
+- `restore_jobs` table: `jobId` (PK), `connectionId` (FK → `connections`), `backupPointId`,
+  `conflictMode` (checked: `override | skip | ask`, default `skip`),
+  `destination` (checked: `original | alternate | export`), `selection` (JSON array),
+  `alternateDestination` (JSON, nullable), `status` (default `queued`),
+  `restoredCount`, `errorCount`, `phaseDiagnostic` (nullable), `createdAt`, `completedAt`.
+
+### No new environment variables
+No new environment variables are introduced in this sprint.
+
+---
+
 ## [Phase 3 Sprint 2] — 2026-05-05 — Inventory Filters, Search & Traceability
 
 ### Added

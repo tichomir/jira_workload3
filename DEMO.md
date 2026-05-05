@@ -715,6 +715,134 @@ holds its data.
 
 ---
 
+## Restore protected objects
+
+After connecting a Jira site and running at least one discover run, open the
+restore wizard to select backed-up objects and initiate a dependency-ordered
+restore job.
+
+### Prerequisites
+
+- A connected Jira site — see [Connect Jira Site walkthrough](#connect-jira-site-walkthrough) above.
+- At least one completed discover run — the wizard auto-populates the most
+  recent backup point ID from `GET /api/inventory`.
+
+---
+
+### Step 1 — Open the Restore Wizard
+
+Navigate to `https://localhost/restore` in your browser. The wizard opens at
+**Step 1 — Select objects**.
+
+- The **Connection** dropdown auto-selects the first connected site. Change it
+  if you have multiple connections.
+- The **Most recent backup point** field populates automatically with the backup
+  point ID returned by `GET /api/inventory?connectionId=…`.
+- Browse objects by type using the **Issue / Project / Board / Sprint** tabs.
+  Tick individual checkboxes or use **Select all on this page** to pick all
+  objects of that type. Selections are preserved when switching tabs.
+- Click **Next →** (the button is disabled until at least one object is
+  selected and a backup point is present).
+
+---
+
+### Step 2 — Choose conflict mode
+
+The wizard advances to **Step 2 — Conflict mode**.
+
+Three options are presented:
+
+| Option | Behaviour |
+|---|---|
+| **Skip** (default) | If an object already exists at the destination, skip it and continue restoring others. |
+| **Override** | If an object already exists, overwrite it with the backed-up version. |
+| **Ask per conflict** | Pause and prompt for a decision whenever a conflict is detected. |
+
+**Skip** is pre-selected. Accept the default and click **Next →**.
+
+---
+
+### Step 3 — Choose destination
+
+The wizard advances to **Step 3 — Restore destination**.
+
+| Option | Description |
+|---|---|
+| **Original location** | Restore objects back to the same Jira project from which they were backed up. |
+| **Alternate location (same Jira site)** | Restore into a different project on the same connected site. Requires a target project key. |
+| **Export / Browser Download** | Download the selected backup data as a file instead of writing back to Jira. |
+
+Select **Original location** and click **Next →**.
+
+> **Cross-site restore is not supported in Phase 1.** A notice banner in the
+> UI confirms that all destination options above apply to the same connected
+> Jira site only.
+
+---
+
+### Step 4 — Review and confirm
+
+The wizard advances to **Step 4 — Review and confirm**. A summary table shows:
+
+| Field | Value |
+|---|---|
+| Connection | Site name of the selected connection |
+| Backup point | UUID of the most recent backup point |
+| Objects | Count of selected items (e.g. "5 objects selected") |
+| Conflict mode | Skip |
+| Destination | Original location |
+
+Click **Start restore**. The wizard POSTs to `POST /api/restore-jobs` with
+`conflictMode: "skip"` and `destination: "original"`, then navigates the
+browser to `/restore-jobs/{jobId}`.
+
+---
+
+### Step 5 — Observe SSE phase progression
+
+The browser navigates to the **Restore Job Progress** page at
+`/restore-jobs/{jobId}`. The page connects to
+`GET /api/restore-jobs/{jobId}/events` via `EventSource` and renders each
+phase row in dependency order as events arrive:
+
+| Phase identifier | UI label |
+|---|---|
+| `site-reference-data` | Site reference data |
+| `project` | Project |
+| `workflow` | Workflow |
+| `custom-field` | Custom field |
+| `board` | Board |
+| `sprint` | Sprint |
+| `issue` | Issue |
+| `comment-attachment-subtask-issuelink` | Comments, attachments, subtasks & issue links |
+
+Each row transitions: **pending (·) → running (spinner) → completed (✓)**.
+
+If a phase throws, it shows **failed (✕)** and all downstream phases show
+**blocked**. The SSE stream closes after a `job_failed` event with
+`error.code: "dependency_phase_failed"` — subsequent phases are never started.
+
+The status banner transitions:
+
+```
+Connecting to restore job…  →  Restore in progress…  →  Completed successfully.
+```
+
+If per-item errors occurred: **Completed with N errors — M items restored.**
+
+If no heartbeat for >20 s: **No progress received for over 20 seconds. The
+restore job may be stalled.**
+
+---
+
+### Step 6 — Completion
+
+When all phases complete the status banner shows **Completed successfully.**
+(or **Completed with N errors** if item-level errors occurred). Click
+**← Start another restore** to return to the wizard.
+
+---
+
 ## Smoke probes (machine-readable)
 
 Each block below is a self-contained POSIX shell script. Run them in order
@@ -1196,4 +1324,105 @@ print(f'PASS: traceability OK — backupPointId={item[\"backupPointId\"]}, displ
 
 echo ""
 echo "All browse-inventory smoke checks passed."
+```
+
+### Probe 8 — restore-protected-objects
+
+```bash
+#!/usr/bin/env bash
+# restore-protected-objects smoke probe
+# timeout: 60
+#
+# Exercises the full restore path against the running local stub:
+#   POST /api/restore-jobs            — create job (conflictMode: skip, destination: original)
+#   GET  /api/restore-jobs/:id/events — SSE event stream
+#
+# Asserts phase_started events arrive in dependency order:
+#   site-reference-data → project → workflow → custom-field →
+#   board → sprint → issue → comment-attachment-subtask-issuelink
+#
+# Terminal SSE event must be job_completed (not job_failed).
+# Requires: running API server (npm run server).
+set -euo pipefail
+
+PORT=${PORT:-3000}
+BASE="http://localhost:${PORT}"
+SMOKE_CLOUD_ID="smoke-restore-$(date +%s)"
+
+echo "==> [1/4] Create smoke connection"
+CONN_RESPONSE=$(curl -sf -X POST "${BASE}/api/connections" \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"cloudId\":      \"${SMOKE_CLOUD_ID}\",
+    \"siteName\":     \"Restore Smoke Site\",
+    \"accessToken\":  \"smoke-access-token\",
+    \"refreshToken\": \"smoke-refresh-token\",
+    \"expiresAt\":    9999999999
+  }")
+
+CONNECTION_ID=$(echo "${CONN_RESPONSE}" | python3 -c "import json,sys; print(json.load(sys.stdin)['connectionId'])")
+echo "PASS: connection created ${CONNECTION_ID}"
+
+echo "==> [2/4] POST /api/restore-jobs — queue restore job (conflictMode: skip, destination: original)"
+BACKUP_POINT_ID="smoke-restore-bp-${SMOKE_CLOUD_ID}"
+
+JOB_RESPONSE=$(curl -sf -X POST "${BASE}/api/restore-jobs" \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"connectionId\":  \"${CONNECTION_ID}\",
+    \"backupPointId\": \"${BACKUP_POINT_ID}\",
+    \"conflictMode\":  \"skip\",
+    \"destination\":   \"original\",
+    \"selection\":     [\"SMOKE-1\"]
+  }")
+
+JOB_ID=$(echo "${JOB_RESPONSE}" | python3 -c "import json,sys; print(json.load(sys.stdin)['jobId'])")
+
+echo "${JOB_RESPONSE}" | grep -q '"status":"queued"' \
+  && echo "PASS: restore job ${JOB_ID} created — status=queued" \
+  || { echo "FAIL: expected status=queued in response"; exit 1; }
+
+echo "==> [3/4] Stream SSE events via curl -N (timeout 60 s)"
+SSE_EVENTS=$(timeout 60 curl -sN "${BASE}/api/restore-jobs/${JOB_ID}/events")
+
+echo "${SSE_EVENTS}" | grep -q '"type":"job_completed"' \
+  && echo "PASS: job_completed terminal event received" \
+  || { echo "FAIL: job_completed event not found in SSE stream"; exit 1; }
+
+echo "==> [4/4] Assert phase_started events arrive in dependency order"
+PHASE_SEQUENCE=$(echo "${SSE_EVENTS}" \
+  | grep '"type":"phase_started"' \
+  | grep -o '"phase":"[^"]*"' \
+  | sed 's/"phase":"//;s/"$//')
+
+echo "${PHASE_SEQUENCE}" | awk '
+  BEGIN {
+    n=0
+    expected[1]="site-reference-data"
+    expected[2]="project"
+    expected[3]="workflow"
+    expected[4]="custom-field"
+    expected[5]="board"
+    expected[6]="sprint"
+    expected[7]="issue"
+    expected[8]="comment-attachment-subtask-issuelink"
+    errors=0
+  }
+  /[^[:space:]]/ {
+    n++
+    if ($0 != expected[n]) {
+      print "FAIL: phase " n ": expected=" expected[n] " got=" $0
+      errors++
+    }
+  }
+  END {
+    if (n == 0) { print "FAIL: no phase_started events received"; exit 1 }
+    if (n != 8) { print "FAIL: expected 8 phases, got " n; exit 1 }
+    if (errors > 0) exit 1
+    print "PASS: " n " phases received in correct dependency order"
+  }
+' || exit 1
+
+echo ""
+echo "All restore-protected-objects smoke checks passed."
 ```

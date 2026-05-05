@@ -1,0 +1,282 @@
+/* ── Restore Job Progress ─────────────────────────────────────── */
+.rjp {
+  background: #ffffff;
+  border: 1px solid #dfe1e6;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(9, 30, 66, 0.08);
+  width: 560px;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+/* ── Header ──────────────────────────────────────────────────── */
+.rjp__header {
+  padding: 20px 28px 16px;
+  border-bottom: 1px solid #dfe1e6;
+  background: #f8f9fa;
+}
+
+.rjp__title {
+  margin: 0 0 4px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #172b4d;
+}
+
+.rjp__job-id {
+  margin: 0;
+  font-size: 11px;
+  color: #6b778c;
+}
+
+.rjp__job-id code {
+  font-family: monospace;
+  font-size: 11px;
+  background: #ebecf0;
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: #172b4d;
+  word-break: break-all;
+}
+
+/* ── Status banner ───────────────────────────────────────────── */
+.rjp__status-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 18px;
+  font-size: 13px;
+  line-height: 1.45;
+  border-bottom: 1px solid transparent;
+}
+
+.rjp__status-banner--connecting {
+  background: #f4f5f7;
+  border-color: #dfe1e6;
+  color: #6b778c;
+}
+
+.rjp__status-banner--running {
+  background: #e8f0fe;
+  border-color: #b3d4ff;
+  color: #0052cc;
+}
+
+.rjp__status-banner--completed {
+  background: #e3fcef;
+  border-color: #79f2c0;
+  color: #006644;
+}
+
+.rjp__status-banner--completed_with_errors {
+  background: #fffae6;
+  border-color: #ffe380;
+  color: #7a4100;
+}
+
+.rjp__status-banner--failed {
+  background: #ffebe6;
+  border-color: #ffbdad;
+  color: #de350b;
+}
+
+.rjp__status-banner--stalled {
+  background: #fffae6;
+  border-color: #ffe380;
+  color: #7a4100;
+}
+
+.rjp__status-banner--stream_error {
+  background: #ffebe6;
+  border-color: #ffbdad;
+  color: #de350b;
+}
+
+.rjp__status-banner--not_found {
+  background: #ffebe6;
+  border-color: #ffbdad;
+  color: #de350b;
+}
+
+.rjp__status-icon {
+  flex-shrink: 0;
+  font-size: 16px;
+  line-height: 1;
+  margin-top: 1px;
+}
+
+/* ── Phase checklist ─────────────────────────────────────────── */
+.rjp__phases {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.rjp__phase {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 28px;
+  border-bottom: 1px solid #f4f5f7;
+  transition: background 0.1s ease;
+}
+
+.rjp__phase:last-child {
+  border-bottom: none;
+}
+
+.rjp__phase--running {
+  background: #f0f6ff;
+}
+
+.rjp__phase--failed {
+  background: #fff5f3;
+}
+
+.rjp__phase--blocked {
+  opacity: 0.45;
+}
+
+/* ── Phase icon ──────────────────────────────────────────────── */
+.rjp__phase-icon {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  margin-top: 1px;
+}
+
+.rjp__phase-icon--pending {
+  background: #ebecf0;
+  color: #a5adba;
+}
+
+.rjp__phase-icon--running {
+  background: #0052cc;
+  color: #ffffff;
+}
+
+.rjp__phase-icon--completed {
+  background: #e3fcef;
+  color: #006644;
+}
+
+.rjp__phase-icon--failed {
+  background: #ffebe6;
+  color: #de350b;
+}
+
+.rjp__phase-icon--blocked {
+  background: #ebecf0;
+  color: #a5adba;
+}
+
+/* ── Phase content ───────────────────────────────────────────── */
+.rjp__phase-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.rjp__phase-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #172b4d;
+  line-height: 1.35;
+}
+
+.rjp__phase--failed .rjp__phase-label {
+  color: #de350b;
+  font-weight: 600;
+}
+
+.rjp__phase--blocked .rjp__phase-label {
+  color: #6b778c;
+}
+
+.rjp__phase-meta {
+  font-size: 11px;
+  color: #6b778c;
+  line-height: 1.4;
+}
+
+.rjp__phase-error {
+  font-size: 11px;
+  color: #de350b;
+  line-height: 1.4;
+  margin-top: 2px;
+}
+
+.rjp__phase-error code {
+  font-family: monospace;
+  background: #ffebe6;
+  padding: 0 3px;
+  border-radius: 2px;
+}
+
+/* ── Progress bar ────────────────────────────────────────────── */
+.rjp__progress-bar-wrap {
+  height: 3px;
+  background: #dfe1e6;
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 5px;
+}
+
+.rjp__progress-bar {
+  height: 100%;
+  background: #0052cc;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+/* ── Spinner ─────────────────────────────────────────────────── */
+@keyframes rjp-spin {
+  to { transform: rotate(360deg); }
+}
+
+.rjp__spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 2px solid rgba(255,255,255,0.4);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: rjp-spin 0.7s linear infinite;
+}
+
+/* ── Footer ──────────────────────────────────────────────────── */
+.rjp__footer {
+  padding: 16px 28px;
+  border-top: 1px solid #dfe1e6;
+  background: #f8f9fa;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.rjp__btn-back {
+  padding: 7px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #42526e;
+  background: #ffffff;
+  border: 1px solid #c1c7d0;
+  border-radius: 4px;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+  transition: background 0.1s ease, border-color 0.1s ease;
+}
+
+.rjp__btn-back:hover {
+  background: #f4f5f7;
+  border-color: #b3bac5;
+}

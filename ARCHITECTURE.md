@@ -84,8 +84,10 @@ The engine is structured around three concerns:
 
 1. **HTTP Client** — `IJiraHttpClient` abstracts all Atlassian REST calls behind
    a small, testable interface. The concrete implementation is `JiraHttpClient`
-   (`src/http/JiraHttpClient.ts`), which holds the rotating-token mutex. Tests
-   inject a double via the interface.
+   (`src/workload/http/JiraHttpClient.ts`), which holds the rotating-token mutex.
+   Note: a separate `JiraHttpClient` at `src/http/JiraHttpClient.ts` handles
+   OAuth/connection-layer calls; these are distinct implementations.
+   Tests inject a double via the interface.
 
 2. **Capture-Order Orchestrator** — `ICaptureOrchestrator` executes phases in the
    mandatory sequence and emits progress events. A phase failure halts the run and
@@ -1194,6 +1196,359 @@ view (UUID, completion timestamp, job status), satisfying T5 §6.2 and T8 §3.
 
 ---
 
+## Restore Subsystem
+
+### Overview
+
+The Restore Subsystem is the workload-side implementation of
+`PlatformWorkloadInterface.restore()`. All restore-phase type contracts live in
+`src/workload/restore/types.ts`. The subsystem exposes two HTTP endpoints:
+`POST /api/restore-jobs` to initiate a restore job, and
+`GET /api/restore-jobs/{id}/events` as a Server-Sent Events stream for
+real-time phase progress.
+
+The restore orchestrator enforces a hard write-dependency chain. A failure in
+any phase halts execution immediately; subsequent phases are never started. The
+operator always sees a named diagnostic before the next phase would have begun.
+Source: T1 §1, T5 §5.2.
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `src/workload/restore/types.ts` | All restore subsystem type contracts (see below) |
+| `src/workload/restore/RestoreOrchestrator.ts` | Concrete `IRestoreOrchestrator` — iterates `RESTORE_PHASE_ORDER`, emits SSE events, halts on phase failure |
+| `src/workload/restore/eventBus.ts` | In-memory event bus — `publish`, `subscribe` (with replay), `clearJob` |
+| `src/routes/restore-jobs.ts` | Express router — `POST /api/restore-jobs`, `GET /api/restore-jobs/:id/events` |
+
+### RestorePhase Enum
+
+Defined in `src/workload/restore/types.ts` as a TypeScript `enum`. The eight
+phases in mandatory execution order:
+
+| Phase | String value | Notes |
+|-------|-------------|-------|
+| `SiteReferenceData` | `'site-reference-data'` | Issue types, field metadata — captured before project write |
+| `Project` | `'project'` | Creates / updates the project shell |
+| `Workflow` | `'workflow'` | Workflow + WorkflowScheme restore |
+| `CustomField` | `'custom-field'` | Custom field definitions + FieldConfiguration |
+| `Board` | `'board'` | Board restore — **preceded by pre-restore scope re-check** |
+| `Sprint` | `'sprint'` | Sprint restore (per board) |
+| `Issue` | `'issue'` | Issue body restore |
+| `CommentAttachmentSubtaskIssuelink` | `'comment-attachment-subtask-issuelink'` | Post-issue-creation pass |
+
+The `comment-attachment-subtask-issuelink` phase is a single combined pass that
+restores comments, attachment binaries, subtask linkages, and issue links after
+all Issue shells exist, avoiding forward-reference failures.
+
+### Dependency Chain
+
+```
+Restore write order (mirror of capture order):
+
+  site-reference-data
+    → project
+    → workflow
+    → custom-field
+    → board              ← pre-restore scope re-check (write:board-scope:jira-software
+    → sprint                 + write:board-scope.admin:jira-software)
+    → issue
+    → comment-attachment-subtask-issuelink  (post-issue-creation pass)
+```
+
+Context (site-reference-data through custom-field) is always restored before
+protected objects (board through issue). Source: T1 §1, T5 §5.2.
+
+### Restore Flow Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant Op  as Operator (UI)
+    participant RJ  as RestoreJobsRouter
+    participant Orch as RestoreOrchestrator
+    participant API  as Jira REST API
+    participant DB   as SQLite Store
+
+    Op->>RJ: POST /api/restore-jobs<br/>{ connectionId, backupPointId, selection, conflictMode, destination }
+    RJ->>DB: INSERT restore job (status=queued)
+    RJ-->>Op: 201 { jobId, status: "queued" }
+
+    Op->>RJ: GET /api/restore-jobs/{jobId}/events (SSE)
+    RJ->>Orch: runRestore(options, onEvent)
+    RJ-->>Op: SSE stream open (text/event-stream)
+
+    Note over Orch,DB: ── site-reference-data phase ──
+    Orch->>Op: SSE phase_started { phase: "site-reference-data" }
+    Orch->>API: GET /rest/api/3/issuetype, GET /rest/api/3/field
+    API-->>Orch: IssueType[], Field[]
+    Orch->>DB: read backup snapshot data for restore context
+    Orch->>Op: SSE phase_progress { processed, total }
+    Orch->>Op: SSE phase_completed { phase: "site-reference-data", restoredCount, errorCount }
+
+    Note over Orch,DB: ── project phase ──
+    Orch->>Op: SSE phase_started { phase: "project" }
+    Orch->>API: check project trash status (30–60d window)
+    alt project in native trash
+        Orch->>Orch: block in-place restore; force alternate-location
+    end
+    Orch->>API: POST /rest/api/3/project (or PUT for override)
+    Orch->>Op: SSE phase_completed { phase: "project", ... }
+
+    Note over Orch,DB: ── workflow → custom-field phases ──
+    Orch->>Op: SSE phase_started { phase: "workflow" }
+    Orch->>API: restore Workflow + WorkflowScheme
+    Orch->>Op: SSE phase_completed { phase: "workflow", ... }
+    Orch->>Op: SSE phase_started { phase: "custom-field" }
+    Orch->>API: restore CustomField + FieldConfiguration
+    Orch->>Op: SSE phase_completed { phase: "custom-field", ... }
+
+    Note over Orch,API: ── board phase — scope re-check first ──
+    Orch->>API: GET /rest/api/3/myself (verify write:board-scope:jira-software<br/>+ write:board-scope.admin:jira-software)
+    alt scope check fails
+        Orch->>Op: SSE job_failed { error: { code: "dependency_phase_failed",<br/>phase: "board", message: "..." } }
+        Orch->>DB: UPDATE restore status=failed, phaseDiagnostic
+        Note over Orch: Execution halts — no further phases
+    else scope check passes
+        Orch->>Op: SSE phase_started { phase: "board" }
+        Orch->>API: restore Board
+        Orch->>Op: SSE phase_completed { phase: "board", ... }
+    end
+
+    Note over Orch,DB: ── sprint phase ──
+    Orch->>Op: SSE phase_started { phase: "sprint" }
+    Orch->>API: restore Sprint (per board)
+    Orch->>Op: SSE phase_completed { phase: "sprint", ... }
+
+    Note over Orch,DB: ── issue phase ──
+    Orch->>Op: SSE phase_started { phase: "issue" }
+    loop per Issue in selection (heartbeat ≤10 s)
+        Orch->>API: POST /rest/api/3/issue (create issue body)
+        Orch->>Op: SSE phase_progress { processed, total }
+    end
+    Orch->>Op: SSE phase_completed { phase: "issue", ... }
+
+    Note over Orch,DB: ── comment-attachment-subtask-issuelink phase ──
+    Orch->>Op: SSE phase_started { phase: "comment-attachment-subtask-issuelink" }
+    loop per Issue
+        Orch->>API: POST /rest/api/3/issue/{id}/comment (restore comments)
+        Orch->>API: POST /rest/api/3/issue/{id}/attachments (restore attachments)
+        Orch->>API: POST /rest/api/3/issueLink (restore issue links + subtask refs)
+        Orch->>Op: SSE phase_progress { processed, total }
+    end
+    Orch->>Op: SSE phase_completed { phase: "comment-attachment-subtask-issuelink", ... }
+    Note over Orch: Best-effort ADF media-link rewrite warning emitted<br/>in restore report when attachment IDs changed (T5 OQ-5)
+
+    Orch->>DB: UPDATE restore status, restoredCount, errorCount, completedAt
+    Orch->>Op: SSE job_completed { errors: N, restoredCount: M }
+```
+
+### Phase Failure Semantics
+
+When any phase returns `status: 'failed'`:
+
+1. The orchestrator emits `job_failed` with `error.code: 'dependency_phase_failed'`
+   and `error.phase` set to the failing phase.
+2. All subsequent phases in `RESTORE_PHASE_ORDER` are skipped.
+3. `RestoreRunResult.phaseDiagnostic` is populated with a human-readable message.
+4. The restore job record in the DB is updated to `status: 'failed'`.
+5. The SSE stream is closed after the `job_failed` event.
+
+No partial re-run or retry is supported in Phase 1. Operators must initiate a new
+restore job after resolving the blocking condition.
+
+### Special Cases
+
+**Pre-restore scope re-check (Board phase):** Before the Board phase begins, the
+orchestrator calls `GET /rest/api/3/myself` and verifies that both
+`write:board-scope:jira-software` and `write:board-scope.admin:jira-software`
+are present in the token's scope list. If either is missing, a `job_failed`
+event is emitted with `phase: 'board'` and execution halts. The UI surfaces a
+403 remediation banner explaining which scope is missing.
+
+**Atlassian native trash detection (Project phase):** If a selected project is
+in the 30–60 day Atlassian-managed trash window, in-place restore (`destination:
+'original'`) is blocked. The orchestrator forces the alternate-location path and
+records a diagnostic in `RestoreRunResult`. Operators must use `destination:
+'alternate'` for trashed projects. Restoring from the native Atlassian trash
+UI is out of scope in Phase 1 (T5 §4.2).
+
+**ADF media-link warning:** After the comment-attachment-subtask-issuelink phase
+completes, the orchestrator checks whether any restored attachment received a new
+`attachmentId`. If so, a best-effort warning is written to the restore report
+noting that ADF media node references in Issue descriptions and comments may be
+broken. Full ADF media-link rewriting is a Phase 2 item (T5 OQ-5).
+
+### Progress Heartbeat and Stalled Detection
+
+Shared constants from `src/workload/types/ProgressEvent.ts`:
+
+| Constant | Value | Meaning |
+|----------|-------|---------|
+| `MAX_HEARTBEAT_INTERVAL_MS` | `10 000` | Orchestrator must emit a `phase_progress` or phase transition event at most every 10 s |
+| `STALLED_THRESHOLD_MS` | `20 000` | Platform transitions job to `'stalled'` after 20 s silence |
+
+### `IRestoreOrchestrator` Interface
+
+```typescript
+interface IRestoreOrchestrator {
+  runRestore(
+    options: RestoreRunOptions,
+    onEvent: (event: RestoreSseEvent) => void
+  ): Promise<RestoreRunResult>;
+}
+```
+
+- `onEvent` receives every `RestoreSseEvent` in phase order.
+- Events are forwarded to the SSE stream by the router layer.
+- `RestoreRunResult.errorCount > 0` ⇒ UI shows "Completed with N errors",
+  never "Completed successfully" (T5 §6.2b).
+- `RestoreRunResult.phaseDiagnostic` is set when any phase returns
+  `status: 'failed'` (T5 §5.2).
+
+### SSE Event Types (`RestoreSseEvent`)
+
+Defined in `src/workload/restore/types.ts` as a discriminated union:
+
+```typescript
+type RestoreSseEvent =
+  | PhaseStartedEvent                // type: 'phase_started'
+  | PhaseCompletedEvent              // type: 'phase_completed'
+  | PhaseProgressEvent               // type: 'phase_progress'
+  | JobFailedEvent                   // type: 'job_failed'
+  | JobCompletedEvent;               // type: 'job_completed'
+```
+
+**`job_failed` event shape** (T5 §5.2):
+
+```typescript
+interface JobFailedEvent {
+  type:  'job_failed';
+  jobId: string;
+  ts:    string;            // ISO-8601
+  error: {
+    code:    'dependency_phase_failed';   // always this literal
+    phase:   RestorePhase;               // the phase that failed
+    message: string;                     // human-readable diagnostic
+  };
+}
+```
+
+**`job_completed` event shape** (T5 §6.2b):
+
+```typescript
+interface JobCompletedEvent {
+  type:          'job_completed';
+  jobId:         string;
+  ts:            string;      // ISO-8601
+  errors:        number;      // total item-level errors across all phases
+  restoredCount: number;      // total items successfully restored
+}
+```
+
+---
+
+### POST /api/restore-jobs
+
+Initiates a restore job against the full dependency-ordered restore orchestrator.
+
+**Request body:**
+
+```json
+{
+  "connectionId":  "550e8400-...",
+  "backupPointId": "bp-20260504-...",
+  "selection":     ["PROJ-1", "PROJ-2"],
+  "conflictMode":  "skip",
+  "destination": {
+    "type": "original"
+  }
+}
+```
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `connectionId` | Yes | — | The `connectionId` of the target connection |
+| `backupPointId` | Yes | — | UUID of the backup point to restore from |
+| `selection` | Yes | — | Array of item IDs to restore (Issue keys, project IDs, etc.) |
+| `conflictMode` | No | `"skip"` | `"override"` \| `"skip"` \| `"ask"`. Source: T5 §5.1 |
+| `destination` | No | `{ type: "original" }` | Destination descriptor. See below. |
+
+**Destination variants:**
+
+```json
+{ "type": "original" }
+```
+```json
+{ "type": "alternate", "cloudId": "a1b2...", "projectKey": "BACKUP" }
+```
+```json
+{ "type": "export" }
+```
+
+Cross-site restore (`cloudId` differs from the connected site) is explicitly
+blocked in Phase 1 (T5 §5.2). The server returns `400 cross_site_not_supported`
+if the `alternate.cloudId` does not match the connection's `cloudId`.
+
+**Success response (201):**
+
+```json
+{
+  "jobId":  "rj-9f3a...",
+  "status": "queued"
+}
+```
+
+**Error responses:**
+
+| Status | `error` field | Meaning |
+|--------|--------------|---------|
+| `400` | `missing_required_fields` | Required body fields absent |
+| `400` | `cross_site_not_supported` | `alternate.cloudId` differs from connection cloudId |
+| `404` | `connection_not_found` | No connection matches `connectionId` |
+| `404` | `backup_point_not_found` | No backup point matches `backupPointId` for this connection |
+
+---
+
+### GET /api/restore-jobs/{id}/events
+
+Server-Sent Events stream for a restore job. The client subscribes immediately
+after receiving the `jobId` from `POST /api/restore-jobs`.
+
+**Response headers:**
+
+```
+Content-Type:  text/event-stream
+Cache-Control: no-cache
+Connection:    keep-alive
+```
+
+**Stream protocol:**
+
+Each SSE message is a single `data:` line carrying the JSON-serialised
+`RestoreSseEvent`, followed by a blank line:
+
+```
+data: {"type":"phase_started","jobId":"rj-9f3a...","ts":"2026-05-05T03:00:01Z","phase":"site-reference-data"}
+
+data: {"type":"phase_progress","jobId":"rj-9f3a...","ts":"2026-05-05T03:00:05Z","phase":"project","processed":1,"total":5}
+
+data: {"type":"job_completed","jobId":"rj-9f3a...","ts":"2026-05-05T03:05:32Z","errors":0,"restoredCount":47}
+
+```
+
+**Event ordering guarantee:** Events are emitted strictly in dependency order.
+A `phase_started` event for phase N is never emitted before `phase_completed`
+for phase N-1. The stream always ends with exactly one terminal event:
+`job_failed` OR `job_completed` — never both.
+
+**Error responses (before stream opens):**
+
+| Status | `error` field | Meaning |
+|--------|--------------|---------|
+| `404` | `restore_job_not_found` | No restore job matches the supplied `{id}` |
+
+---
+
 ## API Surface (T0 §2)
 
 The Platform Stub exposes four endpoint groups. All paths are mounted under
@@ -1286,13 +1641,19 @@ Creates or updates a connection. Accepts two variants distinguished by the
 Returns the latest discovery manifest for a connected Jira site. Maps to
 `PlatformWorkloadInterface.discover()`.
 
+> **Expanded response — see [Inventory Browse Flow](#inventory-browse-flow) for
+> the current full `objectTypes[]` response shape (`InventoryObjectTypesResponse`).**
+> The stub response below reflects the original T0 §2 specification; the actual
+> implementation (Phase 3 Sprint 1 onward) returns an `objectTypes[]` array with
+> per-type counts, `lastBackupAt`, `jsmExcluded`, and a top-level `backupPointId`.
+
 **Query parameters:**
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
 | `connectionId` | Yes | The `connectionId` of the target connection |
 
-**Success response (200):**
+**Success response (200) — original T0 §2 stub shape (superseded):**
 
 ```json
 {
