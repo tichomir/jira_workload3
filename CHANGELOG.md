@@ -4,6 +4,110 @@ All notable changes are documented here by sprint.
 
 ---
 
+## [Phase 4 Sprint 3] — 2026-05-05 — Restore Orchestrator, SSE Phase Stream & Heartbeat Telemetry
+
+### Added
+
+#### HeartbeatEmitter — `src/workload/restore/HeartbeatEmitter.ts`
+- `HeartbeatEmitter(jobId, onEvent)` — arms a `setInterval` at `HEARTBEAT_INTERVAL_MS` (10 000 ms)
+  that fires `{ type: 'heartbeat', jobId, ts, currentPhase }` into the SSE event stream.
+- `start(phase)` — starts the interval; re-entrant: calling while running replaces the previous
+  interval with the new phase so `currentPhase` is always accurate.
+- `stop()` — clears the interval; safe to call when already stopped.
+- `HEARTBEAT_INTERVAL_MS = 10 000` — exported constant; consumed by tests and the SSE route.
+- Source: T5 §6.2.
+
+#### Platform SSE event contract — `src/platform/restore/sseEvents.ts`
+- Canonical platform-boundary type definitions for the restore SSE wire protocol.
+- `SseEvent` — discriminated union of every event type the orchestrator emits:
+  `phase_started`, `phase_progress`, `phase_completed`, `heartbeat`, `job_failed`,
+  `job_completed`, `conflict_pause`, `conflict_resumed`, `post_issue_sub_phase`.
+- `MAX_HEARTBEAT_INTERVAL_MS = 10 000` — maximum allowed gap between consecutive SSE events.
+- `STALLED_THRESHOLD_MS = 20 000` — silence threshold after which the job is considered stalled.
+- `RestorePhaseValue` — string-literal union of all phase identifiers for SSE event fields;
+  platform consumers reference phase names without depending on the workload `RestorePhase` enum.
+- `HeartbeatEvent`, `PhaseStartedEvent`, `PhaseCompletedEvent`, `JobFailedEvent`,
+  `JobCompletedEvent`, `PostIssueSubPhaseEvent` — individually exported event interfaces.
+- Source: T5 §5.2, §6.2, §6.2b.
+
+#### RestoreOrchestrator — `src/workload/restore/RestoreOrchestrator.ts` (updated)
+- `HeartbeatEmitter` wired into `runRestore()`:
+  - `heartbeat.start(phase)` called immediately after emitting `phase_started`.
+  - `heartbeat.stop()` called immediately before emitting `phase_completed` or `job_failed`.
+- Heartbeat events fire at a ≤10 s cadence throughout every running phase, satisfying the
+  ≤10 s SSE event contract (T5 §6.2).
+- Source: T5 §6.2.
+
+#### SSE route — `src/routes/restore-jobs.ts` (updated)
+- Stalled watchdog wired into `GET /api/restore-jobs/:id/events`:
+  - `STALLED_THRESHOLD_MS` (20 000 ms) `setTimeout` reset on every received SSE event.
+  - After 20 s of silence the route emits
+    `{ type: 'stalled', jobId, ts, lastPhase, secondsSinceLastEvent }` to the client and
+    reschedules the watchdog for continuous monitoring without spamming.
+  - `lastPhase` is updated on every `phase_started` event so the stalled report identifies
+    the phase that was running when the stream went silent.
+- SSE comment heartbeat line (`: heartbeat`) emitted every 9 s to prevent connection timeout;
+  distinct from the orchestrator-level `{ type: 'heartbeat' }` event.
+- Source: T5 §6.2.
+
+#### Restore Job Progress UI — `src/platform/ui/restore/RestoreJobProgress.tsx` (updated)
+- "Last heartbeat: Xs ago" indicator rendered while the job is running; updated every second.
+  Timer resets on any received SSE event including `{ type: 'heartbeat' }` events.
+- Stalled state: job transitions to `stalled` when the UI detects no SSE event for ≥20 s and
+  the status banner shows **"No progress received for over 20 seconds. The restore job may be
+  stalled."** (T5 §6.2).
+- **"Completed with N errors"** status: when `job_completed.errors > 0` the banner shows
+  **"Completed with N errors — M items restored."** The phrase "Completed successfully" is
+  never displayed when `errors > 0` (T5 §6.2b).
+- `completed_with_errors` job state mapped to `⚠` icon for visual distinction from
+  clean completion (✓) and failure (✕).
+
+#### Restore Wizard UI — `src/platform/ui/restore/RestoreWizard.tsx` (updated)
+- Minor UX polish: loading-state wording and button disabled-state improvements.
+
+#### Integration and unit tests
+- `src/workload/restore/HeartbeatEmitter.test.ts` — standalone and orchestrator-integrated tests:
+  - Cadence: ≥1 heartbeat within `HEARTBEAT_INTERVAL_MS + 1 s` of `start()`.
+  - Tick rate: ≥2 heartbeats after 21 s; ≥3 after 31 s.
+  - Stop: no new heartbeats after `stop()`; timer fully cleared.
+  - Re-entrancy: second `start()` replaces the first interval; new `currentPhase` reported.
+  - Orchestrator integration: heartbeat emitted mid-phase during a 25 s handler; stops between
+    phases; `currentPhase` matches the active `RestorePhase` entry.
+- `src/routes/restore-jobs-sse-http.test.ts` — real-HTTP SSE wire protocol integration tests:
+  - Binds a live Express server on a random port; no mock HTTP layer.
+  - Response headers: HTTP 200 + `Content-Type: text/event-stream`.
+  - Forced-failure: Workflow handler throws → `job_failed { error.code: 'dependency_phase_failed',
+    error.phase: 'workflow' }`; downstream phases never started; `job_completed` never emitted;
+    `job_failed` is the terminal event. Error object contains exactly `{ code, phase, message }`.
+  - Happy-path: all 8 phases started in `RESTORE_PHASE_ORDER`; `job_completed` is terminal;
+    `job_failed` never emitted.
+  - Wire format: every SSE message block begins with `event: <type>` followed by
+    `data: <json>` where `parsed.type === eventType`. Heartbeat comment lines (`: heartbeat`)
+    are correctly excluded from event parsing.
+
+### **Phase 2 — not yet shipped**
+The following restore phase handlers remain stub (no-op) implementations in Phase 1; concrete
+write operations against the Atlassian REST API are Phase 2 deliverables:
+
+| Phase | Status |
+|---|---|
+| `site-reference-data` | **Phase 2 — not yet shipped** (stub returns 0 restored) |
+| `project` | **Phase 2 — not yet shipped** |
+| `workflow` | **Phase 2 — not yet shipped** |
+| `custom-field` | **Phase 2 — not yet shipped** |
+| `board` | **Phase 2 — not yet shipped** |
+| `sprint` | **Phase 2 — not yet shipped** |
+| `issue` | **Phase 2 — not yet shipped** |
+
+The `comment-attachment-subtask-issuelink` phase executes `runPostIssueCreationPass()` (Sprint 2
+of this phase), but its HTTP write calls are also stub no-ops in Phase 1.
+
+### No new environment variables
+`HEARTBEAT_INTERVAL_MS` (10 000 ms) and `STALLED_THRESHOLD_MS` (20 000 ms) are compile-time
+constants. No env-var override is exposed in Phase 1.
+
+---
+
 ## [Phase 4 Sprint 2] — 2026-05-05 — Restore Wizard: Pre-flight Guards, Conflict Modes & Post-Issue Pass
 
 ### Added

@@ -105,6 +105,15 @@
   margin-top: 1px;
 }
 
+/* ── Heartbeat freshness indicator ───────────────────────────── */
+.rjp__heartbeat {
+  font-size: 11px;
+  color: #6b778c;
+  text-align: right;
+  padding: 6px 18px 2px;
+  min-height: 20px;
+}
+
 /* ── Phase checklist ─────────────────────────────────────────── */
 .rjp__phases {
   list-style: none;

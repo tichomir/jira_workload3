@@ -1303,7 +1303,7 @@ sequenceDiagram
     Orch->>Op: SSE phase_completed { phase: "custom-field", ... }
 
     Note over Orch,API: ── board phase — scope re-check first ──
-    Orch->>API: GET /rest/api/3/myself (verify write:board-scope:jira-software<br/>+ write:board-scope.admin:jira-software)
+    Orch->>DB: SELECT scopes FROM credentials WHERE connectionId = ? (verify write:board-scope:jira-software<br/>+ write:board-scope.admin:jira-software)
     alt scope check fails
         Orch->>Op: SSE job_failed { error: { code: "dependency_phase_failed",<br/>phase: "board", message: "..." } }
         Orch->>DB: UPDATE restore status=failed, phaseDiagnostic
@@ -1986,6 +1986,276 @@ sequenceDiagram
         Orch->>Op: SSE job_completed { errors, restoredCount }
     end
 ```
+
+---
+
+## Restore Orchestrator & SSE Phase Stream
+
+### Overview
+
+This section is the formal architect-level contract for the restore orchestrator
+and the SSE phase event stream. It defines the dependency-chain invariants, the
+two pre-restore guard firing points, the Atlassian native trash branch, and the
+ADF media-link rewrite gap warning. Implementation details live in the Restore
+Subsystem and Restore Phase Chain sections above; this section provides the
+complete invariant set in one place.
+
+**Key files:**
+
+| File | Role |
+|------|------|
+| `src/workload/restore/RestoreOrchestrator.ts` | Concrete `IRestoreOrchestrator` + `RESTORE_PHASES` const |
+| `src/workload/restore/types.ts` | All restore type contracts (`RestorePhase`, `RESTORE_PHASE_ORDER`, `RestoreSseEvent`, `IRestoreOrchestrator`) |
+| `src/platform/restore/sseEvents.ts` | Platform-boundary SSE event types (`SseEvent` union, `RestorePhaseValue`) |
+
+---
+
+### Dependency-Chain Invariants
+
+The restore orchestrator enforces a hard write-dependency order. All invariants
+below are inviolable — no implementation may deviate.
+
+**INV-1 (Phase order):** Phases MUST execute in exactly the sequence given by
+`RESTORE_PHASES` / `RESTORE_PHASE_ORDER`. No phase may be skipped, repeated, or
+run concurrently with another phase.
+
+```
+site-reference-data
+  → project         ← GUARD: trash detection fires here
+  → workflow
+  → custom-field
+  → board           ← GUARD: scope re-check fires here (HALTING)
+  → sprint
+  → issue
+  → comment-attachment-subtask-issuelink  (post-issue-creation pass)
+```
+
+**INV-2 (Halt on failure):** A phase handler throw OR a halting guard failure
+causes immediate job termination. The orchestrator MUST:
+  1. Emit `job_failed { error: { code: 'dependency_phase_failed', phase, message } }`.
+  2. Populate `RestoreRunResult.phaseDiagnostic`.
+  3. Return without starting any subsequent phase.
+
+**INV-3 (SSE ordering):** `phase_started` for phase N is never emitted before
+`phase_completed` for phase N−1. The stream ends with exactly one terminal event
+(`job_failed` XOR `job_completed`).
+
+**INV-4 (Heartbeat cadence):** The orchestrator MUST emit at least one event
+every `MAX_HEARTBEAT_INTERVAL_MS` (10 000 ms). A gap of >20 000 ms
+(`STALLED_THRESHOLD_MS`) transitions the job to `'stalled'` in the UI.
+
+**INV-5 (Error reporting):** When `RestoreRunResult.errorCount > 0`, the job
+status is `'completed_with_errors'`. The UI MUST display "Completed with N errors"
+— never "Completed successfully" (T5 §6.2b).
+
+---
+
+### Pre-Restore Guard Specification
+
+#### Guard A — Atlassian Native Trash Detection (Project phase, non-halting)
+
+**Fires:** At the start of the Project phase, once per project in the selection.
+
+**What it checks:** Whether each selected project is in Atlassian's 60-day
+managed trash window.
+
+**Outcomes:**
+
+| Condition | Effect |
+|-----------|--------|
+| Project is live (`inTrash: false`) | Proceed with in-place write |
+| Project in trash AND `destination === 'original'` | Force `destination = 'alternate'`; append `TrashStatus` to `RestoreRunResult.trashDetectionResults`; **continue** (not `job_failed`) |
+| Project in trash AND `destination !== 'original'` | No rerouting needed; proceed |
+
+**This guard NEVER emits `job_failed`.** It silently reroutes the destination
+and allows the phase to continue. Operators see the rerouted projects via
+`RestoreRunResult.trashDetectionResults`.
+
+Restoring from Atlassian's native trash UI is out of scope in Phase 1 (T5 §4.2,
+CLAUDE.md Non-Goals). Projects in the trash window MUST use `destination: 'alternate'`.
+
+#### Guard B — Board Scope Re-Check (before Board phase, HALTING)
+
+**Fires:** Once per restore job, immediately before the Board phase begins. Fires
+regardless of how many boards are in scope.
+
+**What it checks:** Both board-write scopes are present in the stored credential:
+- `write:board-scope:jira-software`
+- `write:board-scope.admin:jira-software`
+
+**How it checks:** Reads the `scopes` column from the `credentials` table for the
+active `connectionId`. No HTTP request is made — scopes are persisted at
+token-exchange time and updated atomically on every token refresh.
+
+**Outcomes:**
+
+| Condition | Effect |
+|-----------|--------|
+| Both scopes present | `GuardResult { passed: true }` — Board phase proceeds |
+| Either scope missing | `GuardResult { passed: false, failureCode: 'scope_missing' }` — emit `job_failed`; halt |
+
+When the guard fails (INV-2 applies):
+1. Emit `job_failed { error: { code: 'dependency_phase_failed', phase: 'board', message: '...' } }`.
+2. Set `status = 'failed'`, `phaseDiagnostic = 'board scope missing: [...]'` in the DB.
+3. Close the SSE stream.
+4. Sprint, Issue, and post-issue-creation-pass phases are never started.
+
+The UI surfaces a 403 remediation banner listing the missing scopes.
+
+---
+
+### ADF Media-Link Rewrite Gap Warning
+
+After every attachment upload in the post-issue-creation pass, the orchestrator
+compares the new Atlassian-assigned `attachmentId` with the backed-up
+`attachmentId`. When they differ:
+
+- `PostIssuePassReport.adfMediaLinkWarning` is set to `true`.
+- The affected Issue key is appended to `PostIssuePassReport.adfMediaLinkAffectedIssueKeys[]`.
+- A best-effort warning is written to the restore report noting that ADF `media`
+  nodes in Issue descriptions or comments may reference the old `attachmentId`
+  and therefore be broken.
+
+**This is a warning, not an error.** The restore job still completes normally.
+Full ADF media-link rewriting is a Phase 2 item (T5 OQ-5, CLAUDE.md Non-Goals).
+
+---
+
+### SSE Phase Stream — Sequence Diagram
+
+The diagram below shows the SSE event stream for a fully successful restore run.
+Guard insertion points and the ADF warning check are annotated.
+
+```mermaid
+sequenceDiagram
+    participant Client as SSE Client (UI)
+    participant Orch   as RestoreOrchestrator
+    participant GuardA as TrashDetectionGuard
+    participant GuardB as BoardScopeRecheck
+    participant API    as Jira REST API
+
+    Note over Orch,API: ── site-reference-data phase ──
+    Orch->>Client: SSE phase_started { phase: "site-reference-data" }
+    Orch->>API: restore site reference data
+    Orch->>Client: SSE phase_progress { processed, total }  (≤10 s interval)
+    Orch->>Client: SSE phase_completed { phase: "site-reference-data", restoredCount, errorCount }
+
+    Note over GuardA,API: ── GUARD A: Trash Detection — fires before project write ──
+    Orch->>Client: SSE phase_started { phase: "project" }
+    loop per selected project
+        GuardA->>API: check project trash status
+        alt inTrash AND destination === "original"
+            GuardA-->>Orch: passed: false → force destination = "alternate"
+            Note over Orch: Execution CONTINUES — not job_failed
+        else
+            GuardA-->>Orch: passed: true
+        end
+        Orch->>API: POST /rest/api/3/project
+        Orch->>Client: SSE phase_progress
+    end
+    Orch->>Client: SSE phase_completed { phase: "project", ... }
+
+    Note over Orch,API: ── workflow phase ──
+    Orch->>Client: SSE phase_started { phase: "workflow" }
+    Orch->>API: restore Workflow + WorkflowScheme
+    Orch->>Client: SSE phase_completed { phase: "workflow", ... }
+
+    Note over Orch,API: ── custom-field phase ──
+    Orch->>Client: SSE phase_started { phase: "custom-field" }
+    Orch->>API: restore CustomField + FieldConfiguration
+    Orch->>Client: SSE phase_completed { phase: "custom-field", ... }
+
+    Note over GuardB,API: ── GUARD B: Board Scope Re-Check — HALTING if either scope missing ──
+    GuardB->>GuardB: read scopes from credentials table (no HTTP)
+    alt write:board-scope:jira-software OR write:board-scope.admin:jira-software MISSING
+        GuardB-->>Orch: passed: false, failureCode: "scope_missing"
+        Orch->>Client: SSE job_failed { error: { code: "dependency_phase_failed", phase: "board" } }
+        Note over Orch: HALT — sprint, issue, post-issue pass never start
+    else Both board scopes present
+        GuardB-->>Orch: passed: true
+        Orch->>Client: SSE phase_started { phase: "board" }
+        Orch->>API: restore Board(s)
+        Orch->>Client: SSE phase_completed { phase: "board", ... }
+
+        Note over Orch,API: ── sprint phase ──
+        Orch->>Client: SSE phase_started { phase: "sprint" }
+        Orch->>API: restore Sprint(s)
+        Orch->>Client: SSE phase_completed { phase: "sprint", ... }
+
+        Note over Orch,API: ── issue phase ──
+        Orch->>Client: SSE phase_started { phase: "issue" }
+        loop per Issue (heartbeat ≤10 s)
+            Orch->>API: POST /rest/api/3/issue
+            Orch->>Client: SSE phase_progress { processed, total }
+        end
+        Orch->>Client: SSE phase_completed { phase: "issue", ... }
+
+        Note over Orch,API: ── post-issue-creation pass ──
+        Orch->>Client: SSE phase_started { phase: "comment-attachment-subtask-issuelink" }
+        loop per restored Issue
+            Orch->>API: POST .../comment, .../attachments, POST .../issueLink
+            Orch->>Orch: compare new vs backed-up attachmentId
+            alt attachmentId changed
+                Note over Orch: Set adfMediaLinkWarning=true<br/>Append issueKey to adfMediaLinkAffectedIssueKeys
+            end
+            Orch->>Client: SSE phase_progress
+        end
+        Orch->>Client: SSE phase_completed { phase: "comment-attachment-subtask-issuelink", ... }
+
+        Orch->>Client: SSE job_completed { errors: N, restoredCount: M }
+    end
+```
+
+---
+
+### `SseEvent` Type Union (platform/restore/sseEvents.ts)
+
+The platform-boundary `SseEvent` union (defined in `src/platform/restore/sseEvents.ts`)
+is the type used by the Express route layer and SSE client code. It is a
+standalone type that does not depend on workload internals.
+
+```typescript
+type SseEvent =
+  | PhaseStartedEvent       // type: 'phase_started'
+  | PhaseProgressEvent      // type: 'phase_progress'
+  | PhaseCompletedEvent     // type: 'phase_completed'
+  | HeartbeatEvent          // type: 'heartbeat'       (transport keep-alive)
+  | JobFailedEvent          // type: 'job_failed'      ← terminal
+  | JobCompletedEvent       // type: 'job_completed'   ← terminal
+  | ConflictPauseEvent      // type: 'conflict_pause'  (conflictMode==='ask')
+  | ConflictResumedEvent    // type: 'conflict_resumed'
+  | PostIssueSubPhaseEvent; // type: 'post_issue_sub_phase'
+```
+
+**`job_failed` invariant** (T5 §5.2):
+
+```typescript
+interface JobFailedEvent extends SseEventBase {
+  type: 'job_failed';
+  error: {
+    code:    'dependency_phase_failed';  // always this literal string
+    phase:   RestorePhaseValue;          // the phase that halted execution
+    message: string;                     // human-readable diagnostic
+  };
+}
+```
+
+`error.code` is always the literal `'dependency_phase_failed'`. Clients MUST
+NOT pattern-match on `error.message` for programmatic decisions — that field is
+for operator display only.
+
+**`job_completed` invariant** (T5 §6.2b):
+
+```typescript
+interface JobCompletedEvent extends SseEventBase {
+  type:          'job_completed';
+  errors:        number;   // 0 → "Completed"; >0 → "Completed with N errors"
+  restoredCount: number;
+}
+```
+
+When `errors > 0`, the UI MUST display `"Completed with N errors"`. The string
+`"Completed successfully"` must never appear when `errors > 0`.
 
 ---
 

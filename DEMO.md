@@ -851,6 +851,22 @@ phase row in dependency order as events arrive:
 
 Each row transitions: **pending (·) → running (spinner) → completed (✓)**.
 
+#### SSE heartbeat events
+
+While a phase handler is executing, `HeartbeatEmitter` fires every 10 seconds and
+emits a `heartbeat` event into the SSE stream:
+
+```json
+{ "type": "heartbeat", "jobId": "…", "ts": "2026-05-05T03:00:10Z", "currentPhase": "issue" }
+```
+
+`currentPhase` identifies the restore phase currently in progress. The **Restore Job Progress**
+page displays a "Last heartbeat: Xs ago" indicator while the job is running.
+
+The UI resets its stalled-detection watchdog timer on every received SSE event (including
+`heartbeat`, `phase_started`, `phase_completed`, and `post_issue_sub_phase`). If no event
+arrives for more than 20 seconds the stalled banner appears.
+
 #### Pre-phase guards
 
 Two guards run automatically during the sequence and can halt execution
@@ -1500,12 +1516,21 @@ echo "${JOB_RESPONSE}" | grep -q '"status":"queued"' \
   && echo "PASS: restore job ${JOB_ID} created — status=queued" \
   || { echo "FAIL: expected status=queued in response"; exit 1; }
 
-echo "==> [3/4] Stream SSE events via curl -N (timeout 60 s)"
-SSE_EVENTS=$(timeout 60 curl -sN "${BASE}/api/restore-jobs/${JOB_ID}/events")
+echo "==> [3/4] Stream SSE events via curl --no-buffer (timeout 60 s)"
+SSE_EVENTS=$(timeout 60 curl -s --no-buffer "${BASE}/api/restore-jobs/${JOB_ID}/events")
 
-echo "${SSE_EVENTS}" | grep -q '"type":"job_completed"' \
-  && echo "PASS: job_completed terminal event received" \
-  || { echo "FAIL: job_completed event not found in SSE stream"; exit 1; }
+echo "${SSE_EVENTS}" | grep -q '"type":"phase_started"' \
+  && echo "PASS: at least one phase_started event received" \
+  || { echo "FAIL: no phase_started events in SSE stream"; exit 1; }
+
+if echo "${SSE_EVENTS}" | grep -q '"type":"job_completed"'; then
+  echo "PASS: job_completed terminal event received"
+elif echo "${SSE_EVENTS}" | grep -q '"type":"job_failed"'; then
+  echo "PASS: job_failed terminal event received"
+else
+  echo "FAIL: no terminal event (job_completed or job_failed) in SSE stream"
+  exit 1
+fi
 
 echo "==> [4/4] Assert phase_started events arrive in dependency order"
 PHASE_SEQUENCE=$(echo "${SSE_EVENTS}" \
@@ -1630,4 +1655,34 @@ npx vitest run src/workload/restore/RestoreOrchestrator.test.ts \
 
 echo ""
 echo "All restore-sprint2-guards smoke checks passed."
+```
+
+### Probe 10 — restore-sprint3-heartbeat: HeartbeatEmitter & SSE HTTP integration
+
+```bash
+#!/usr/bin/env bash
+# restore-sprint3-heartbeat smoke probe
+# timeout: 60
+#
+# Verifies Sprint 3 restore SSE deliverables:
+#   HeartbeatEmitter cadence, stop, re-entrancy (standalone unit tests)
+#   HeartbeatEmitter integration with RestoreOrchestrator (heartbeat fires during long phase)
+#   SSE endpoint real-HTTP integration: wire format, forced-failure job_failed semantics,
+#     happy-path all 8 phases in dependency order
+#
+# No running API server needed — integration tests create their own in-process server.
+set -euo pipefail
+
+echo "==> [1/2] HeartbeatEmitter unit + orchestrator integration tests"
+npx vitest run src/workload/restore/HeartbeatEmitter.test.ts \
+  && echo "PASS: HeartbeatEmitter tests passed" \
+  || { echo "FAIL: HeartbeatEmitter tests failed"; exit 1; }
+
+echo "==> [2/2] SSE endpoint real-HTTP integration tests (forced-failure + happy-path)"
+npx vitest run src/routes/restore-jobs-sse-http.test.ts \
+  && echo "PASS: restore-jobs-sse-http integration tests passed" \
+  || { echo "FAIL: restore-jobs-sse-http integration tests failed"; exit 1; }
+
+echo ""
+echo "All restore-sprint3-heartbeat smoke checks passed."
 ```

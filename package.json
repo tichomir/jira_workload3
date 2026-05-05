@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "server": "tsx src/server.ts",
     "test": "vitest run",
+    "test:restore": "vitest run test/restore/ --reporter=verbose",
     "check:http-guard": "bash scripts/check-http-guard.sh"
   },
   "dependencies": {

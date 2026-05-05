@@ -136,9 +136,14 @@ function makeSseReq(id: string): Request {
 // ---------------------------------------------------------------------------
 
 function parseSseWrites(writes: string[]): RestoreSseEvent[] {
-  return writes
-    .filter((w) => w.startsWith('data: '))
-    .map((w) => JSON.parse(w.slice('data: '.length)) as RestoreSseEvent);
+  const events: RestoreSseEvent[] = [];
+  for (const w of writes) {
+    const dataLine = w.split('\n').find((l) => l.startsWith('data: '));
+    if (dataLine) {
+      events.push(JSON.parse(dataLine.slice('data: '.length)) as RestoreSseEvent);
+    }
+  }
+  return events;
 }
 
 // ---------------------------------------------------------------------------

@@ -123,19 +123,33 @@ export function RestoreJobProgress({ jobId }: RestoreJobProgressProps) {
   const [jobState, setJobState] = useState<JobState>('connecting');
   const [phases, setPhases] = useState<Record<RestorePhaseType, PhaseInfo>>(initPhases);
   const [completedInfo, setCompletedInfo] = useState<CompletedInfo | null>(null);
+  const [secondsAgo, setSecondsAgo] = useState(0);
 
-  // Track last event time for stalled detection
+  // Track last event time for stalled detection and heartbeat freshness
   const lastEventTimeRef = useRef<number>(Date.now());
   const stalledTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const heartbeatTickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const jobStateRef = useRef<JobState>('connecting');
 
   jobStateRef.current = jobState;
+
+  // Tick every second to update "Last heartbeat: Xs ago" display
+  useEffect(() => {
+    heartbeatTickRef.current = setInterval(() => {
+      const elapsed = Date.now() - lastEventTimeRef.current;
+      setSecondsAgo(Math.floor(elapsed / 1000));
+    }, 1_000);
+    return () => {
+      if (heartbeatTickRef.current !== null) clearInterval(heartbeatTickRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     const es = new EventSource(`/api/restore-jobs/${encodeURIComponent(jobId)}/events`);
 
     function resetStalledTimer() {
       lastEventTimeRef.current = Date.now();
+      setSecondsAgo(0);
     }
 
     // Start stalled detection — check every 5s whether >20s have elapsed
@@ -151,6 +165,7 @@ export function RestoreJobProgress({ jobId }: RestoreJobProgressProps) {
 
     es.addEventListener('message', (ev: MessageEvent<string>) => {
       resetStalledTimer();
+      setJobState((s) => (s === 'stalled' ? 'running' : s));
 
       let data: SseEvent;
       try {
@@ -249,6 +264,13 @@ export function RestoreJobProgress({ jobId }: RestoreJobProgressProps) {
     };
   }, [jobId]);
 
+  const isTerminal =
+    jobState === 'completed' ||
+    jobState === 'completed_with_errors' ||
+    jobState === 'failed' ||
+    jobState === 'not_found' ||
+    jobState === 'stream_error';
+
   return (
     <div className="rjp" role="region" aria-label="Restore job progress">
       <div className="rjp__header">
@@ -259,6 +281,14 @@ export function RestoreJobProgress({ jobId }: RestoreJobProgressProps) {
       </div>
 
       <StatusBanner jobState={jobState} completedInfo={completedInfo} />
+
+      {!isTerminal && (
+        <div className="rjp__heartbeat" aria-live="polite" data-testid="heartbeat-indicator">
+          {jobState === 'connecting'
+            ? 'Connecting to job stream…'
+            : `Last heartbeat: ${secondsAgo}s ago`}
+        </div>
+      )}
 
       <ol className="rjp__phases" aria-label="Restore phases">
         {RESTORE_PHASES.map((phase) => (

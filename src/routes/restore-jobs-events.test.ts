@@ -18,6 +18,7 @@ import type { Request, Response } from 'express';
 import { _setDbForTesting, _resetDb } from '../db/database.js';
 import { handleGetJobEvents } from './restore-jobs.js';
 import { publish, _clearAll } from '../workload/restore/eventBus.js';
+import { STALLED_THRESHOLD_MS } from '../platform/restore/sseEvents.js';
 import {
   RESTORE_PHASE_ORDER,
   RestorePhase,
@@ -26,6 +27,7 @@ import {
   type PhaseCompletedEvent,
   type JobCompletedEvent,
   type JobFailedEvent,
+  type HeartbeatEvent,
 } from '../workload/restore/types.js';
 
 // ---------------------------------------------------------------------------
@@ -179,11 +181,16 @@ function jobFailed(jobId: string, phase: RestorePhase): JobFailedEvent {
   };
 }
 
-/** Parse SSE data lines into RestoreSseEvent objects. */
+/** Parse SSE messages (event:/data: blocks) into RestoreSseEvent objects. */
 function parseSseWrites(writes: string[]): RestoreSseEvent[] {
-  return writes
-    .filter((w) => w.startsWith('data: '))
-    .map((w) => JSON.parse(w.slice('data: '.length)) as RestoreSseEvent);
+  const events: RestoreSseEvent[] = [];
+  for (const w of writes) {
+    const dataLine = w.split('\n').find((l) => l.startsWith('data: '));
+    if (dataLine) {
+      events.push(JSON.parse(dataLine.slice('data: '.length)) as RestoreSseEvent);
+    }
+  }
+  return events;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,7 +240,9 @@ describe('GET /api/restore-jobs/:id/events (SSE)', () => {
     publish('job-format', event);
     publish('job-format', jobCompleted('job-format'));
 
-    expect(mock.writes.some((w) => w.startsWith('data: '))).toBe(true);
+    // SSE format: event: <type>\ndata: <json>\n\n
+    expect(mock.writes.some((w) => w.startsWith('event: '))).toBe(true);
+    expect(mock.writes[0]).toMatch(/^event: phase_started\ndata: /);
     const events = parseSseWrites(mock.writes);
     expect(events[0]).toMatchObject({ type: 'phase_started', phase: RestorePhase.SiteReferenceData });
   });
@@ -423,5 +432,184 @@ describe('GET /api/restore-jobs/:id/events (SSE)', () => {
     publish(jobId, jobCompleted(jobId));
 
     expect(mock.writes.length).toBe(writesBeforeClose);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stalled-alert watchdog
+// ---------------------------------------------------------------------------
+
+function heartbeatEvent(jobId: string, phase: RestorePhase): HeartbeatEvent {
+  return { type: 'heartbeat', jobId, ts: new Date().toISOString(), currentPhase: phase };
+}
+
+interface StalledPayload {
+  type: string;
+  jobId: string;
+  lastPhase: string | null;
+  secondsSinceLastEvent: number;
+}
+
+function parseStalledEvent(writes: string[]): StalledPayload | undefined {
+  const stalledWrite = writes.find((w) => w.startsWith('event: stalled\n'));
+  if (!stalledWrite) return undefined;
+  const dataLine = stalledWrite.split('\n').find((l) => l.startsWith('data: '));
+  if (!dataLine) return undefined;
+  return JSON.parse(dataLine.slice('data: '.length)) as StalledPayload;
+}
+
+describe('stalled-alert watchdog', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+    _setDbForTesting(db);
+    _clearAll();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    _resetDb();
+    _clearAll();
+  });
+
+  it('emits stalled event after >20s of silence from a paused orchestrator', async () => {
+    vi.useFakeTimers();
+
+    const jobId = 'job-stalled-basic';
+    insertJob(db, jobId);
+
+    // Manually-resolved promise simulates a paused orchestrator phase handler
+    let resolvePause!: () => void;
+    const _pausePromise = new Promise<void>((resolve) => { resolvePause = resolve; });
+    void _pausePromise; // referenced so linter knows it's used
+
+    const { req } = makeSseReq(jobId);
+    const mock = makeSseRes();
+    handleGetJobEvents(req, mock.res);
+
+    // Orchestrator started the Issue phase then stalled (promise not yet resolved)
+    publish(jobId, phaseStarted(jobId, RestorePhase.Issue));
+
+    // Advance past the stalled threshold without resolving the pause or publishing events
+    await vi.advanceTimersByTimeAsync(STALLED_THRESHOLD_MS + 1_000);
+
+    const payload = parseStalledEvent(mock.writes);
+    expect(payload).toBeDefined();
+    expect(payload!.type).toBe('stalled');
+    expect(payload!.jobId).toBe(jobId);
+    expect(payload!.lastPhase).toBe(RestorePhase.Issue);
+    expect(payload!.secondsSinceLastEvent).toBeGreaterThanOrEqual(20);
+
+    // Stream is NOT closed — stalled is not a terminal event
+    expect(mock.isEnded()).toBe(false);
+
+    // Clean up: resolve the pause (no-op for the test, just avoids dangling promise)
+    resolvePause();
+  });
+
+  it('stalled event fires within 21s of the last received event', async () => {
+    vi.useFakeTimers();
+
+    const jobId = 'job-stalled-timing';
+    insertJob(db, jobId);
+
+    const { req } = makeSseReq(jobId);
+    const mock = makeSseRes();
+    handleGetJobEvents(req, mock.res);
+
+    // Simulate orchestrator active then silent
+    publish(jobId, phaseStarted(jobId, RestorePhase.Sprint));
+    publish(jobId, heartbeatEvent(jobId, RestorePhase.Sprint)); // last event from orchestrator
+
+    // Advance exactly STALLED_THRESHOLD_MS + 1s — stalled must have fired by now
+    await vi.advanceTimersByTimeAsync(STALLED_THRESHOLD_MS + 1_000);
+
+    expect(parseStalledEvent(mock.writes)).toBeDefined();
+    expect(mock.isEnded()).toBe(false);
+  });
+
+  it('watchdog resets on each forwarded event — no stalled fires under normal heartbeat cadence', async () => {
+    vi.useFakeTimers();
+
+    const jobId = 'job-no-stalled';
+    insertJob(db, jobId);
+
+    const { req } = makeSseReq(jobId);
+    const mock = makeSseRes();
+    handleGetJobEvents(req, mock.res);
+
+    publish(jobId, phaseStarted(jobId, RestorePhase.Project));
+
+    // Simulate heartbeats every 9s for 63s total (7 ticks) — always within 20s threshold
+    for (let i = 0; i < 7; i++) {
+      await vi.advanceTimersByTimeAsync(9_000);
+      publish(jobId, heartbeatEvent(jobId, RestorePhase.Project));
+    }
+
+    // No stalled event should have fired
+    expect(mock.writes.find((w) => w.startsWith('event: stalled\n'))).toBeUndefined();
+    expect(mock.isEnded()).toBe(false);
+  });
+
+  it('stalled event carries lastPhase: null when no phase_started was seen before the stall', async () => {
+    vi.useFakeTimers();
+
+    const jobId = 'job-stalled-nophase';
+    insertJob(db, jobId);
+
+    const { req } = makeSseReq(jobId);
+    const mock = makeSseRes();
+    handleGetJobEvents(req, mock.res);
+
+    // No events published at all
+    await vi.advanceTimersByTimeAsync(STALLED_THRESHOLD_MS + 1_000);
+
+    const payload = parseStalledEvent(mock.writes);
+    expect(payload).toBeDefined();
+    expect(payload!.lastPhase).toBeNull();
+    expect(mock.isEnded()).toBe(false);
+  });
+
+  it('stream remains open after stalled and closes normally on job_completed', async () => {
+    vi.useFakeTimers();
+
+    const jobId = 'job-stalled-recover';
+    insertJob(db, jobId);
+
+    const { req } = makeSseReq(jobId);
+    const mock = makeSseRes();
+    handleGetJobEvents(req, mock.res);
+
+    publish(jobId, phaseStarted(jobId, RestorePhase.Board));
+
+    // Trigger stalled
+    await vi.advanceTimersByTimeAsync(STALLED_THRESHOLD_MS + 1_000);
+    expect(parseStalledEvent(mock.writes)).toBeDefined();
+    expect(mock.isEnded()).toBe(false);
+
+    // Orchestrator recovers and completes
+    publish(jobId, jobCompleted(jobId));
+    expect(mock.isEnded()).toBe(true);
+  });
+
+  it('cleanup on disconnect stops the stalled watchdog — no stalled fires after close', async () => {
+    vi.useFakeTimers();
+
+    const jobId = 'job-stalled-disconnect';
+    insertJob(db, jobId);
+
+    const { req, triggerClose } = makeSseReq(jobId);
+    const mock = makeSseRes();
+    handleGetJobEvents(req, mock.res);
+
+    publish(jobId, phaseStarted(jobId, RestorePhase.Workflow));
+
+    // Client disconnects before stalled threshold
+    triggerClose();
+
+    // Advance well past threshold — no stalled should fire
+    await vi.advanceTimersByTimeAsync(STALLED_THRESHOLD_MS + 10_000);
+    expect(mock.writes.find((w) => w.startsWith('event: stalled\n'))).toBeUndefined();
   });
 });

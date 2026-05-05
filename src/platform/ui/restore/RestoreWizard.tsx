@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
 import './RestoreWizard.css';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -81,7 +80,63 @@ const STEPS = [
   { label: 'Conflict mode' },
   { label: 'Destination' },
   { label: 'Review' },
+  { label: 'Run' },
 ];
+
+// ── Run step constants ────────────────────────────────────────────────────────
+
+const RESTORE_PHASES = [
+  'site-reference-data',
+  'project',
+  'workflow',
+  'custom-field',
+  'board',
+  'sprint',
+  'issue',
+  'comment-attachment-subtask-issuelink',
+] as const;
+
+type RestorePhaseType = typeof RESTORE_PHASES[number];
+
+const PHASE_LABELS: Record<RestorePhaseType, string> = {
+  'site-reference-data': 'Site reference data',
+  project: 'Project',
+  workflow: 'Workflow',
+  'custom-field': 'Custom field',
+  board: 'Board',
+  sprint: 'Sprint',
+  issue: 'Issue',
+  'comment-attachment-subtask-issuelink': 'Comments, attachments, subtasks & issue links',
+};
+
+type PhaseState = 'pending' | 'running' | 'completed' | 'failed' | 'blocked';
+
+interface RunPhaseInfo {
+  state: PhaseState;
+  restoredCount: number;
+  errorCount: number;
+  processed: number;
+  total: number | null;
+  errorMessage?: string;
+  errorCode?: string;
+}
+
+type RunJobState = 'connecting' | 'running' | 'completed' | 'completed_with_errors' | 'failed' | 'stalled';
+
+const STALLED_MS = 20_000;
+
+function initRunPhases(): Record<RestorePhaseType, RunPhaseInfo> {
+  return Object.fromEntries(
+    RESTORE_PHASES.map((p) => [
+      p,
+      { state: 'pending', restoredCount: 0, errorCount: 0, processed: 0, total: null },
+    ])
+  ) as Record<RestorePhaseType, RunPhaseInfo>;
+}
+
+function isRestorePhase(p: string): p is RestorePhaseType {
+  return RESTORE_PHASES.includes(p as RestorePhaseType);
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -542,12 +597,258 @@ function Step4({
   );
 }
 
+// ── Step 5: Run ──────────────────────────────────────────────────────────────
+
+interface Step5Props {
+  jobId: string;
+}
+
+function Step5({ jobId }: Step5Props) {
+  const [jobState, setJobState] = useState<RunJobState>('connecting');
+  const [phases, setPhases] = useState<Record<RestorePhaseType, RunPhaseInfo>>(initRunPhases);
+  const [completedInfo, setCompletedInfo] = useState<{ totalErrors: number; totalRestored: number } | null>(null);
+  const [secondsAgo, setSecondsAgo] = useState(0);
+
+  const lastHeartbeatRef = useRef<number>(Date.now());
+  const jobStateRef = useRef<RunJobState>('connecting');
+  jobStateRef.current = jobState;
+
+  // Tick every second: update "Xs ago" display and check for stalled
+  useEffect(() => {
+    const ticker = setInterval(() => {
+      const elapsed = Date.now() - lastHeartbeatRef.current;
+      setSecondsAgo(Math.floor(elapsed / 1000));
+      if (elapsed >= STALLED_MS && jobStateRef.current === 'running') {
+        setJobState('stalled');
+      }
+    }, 1_000);
+    return () => clearInterval(ticker);
+  }, []);
+
+  // EventSource lifecycle
+  useEffect(() => {
+    const es = new EventSource(`/api/restore-jobs/${encodeURIComponent(jobId)}/events`);
+
+    function bump() {
+      lastHeartbeatRef.current = Date.now();
+      setSecondsAgo(0);
+      setJobState((s) => (s === 'stalled' ? 'running' : s));
+    }
+
+    es.addEventListener('message', (ev: MessageEvent<string>) => {
+      bump();
+      let data: Record<string, unknown>;
+      try {
+        data = JSON.parse(ev.data) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+
+      const type = data.type as string;
+
+      if (type === 'phase_started') {
+        const phase = data.phase as string;
+        if (!isRestorePhase(phase)) return;
+        setJobState((s) => (s === 'connecting' ? 'running' : s));
+        setPhases((prev) => ({ ...prev, [phase]: { ...prev[phase], state: 'running' } }));
+      } else if (type === 'phase_progress') {
+        const phase = data.phase as string;
+        if (!isRestorePhase(phase)) return;
+        setPhases((prev) => ({
+          ...prev,
+          [phase]: {
+            ...prev[phase],
+            state: 'running',
+            processed: data.processed as number,
+            total: data.total as number | null,
+          },
+        }));
+      } else if (type === 'phase_completed') {
+        const phase = data.phase as string;
+        if (!isRestorePhase(phase)) return;
+        setPhases((prev) => ({
+          ...prev,
+          [phase]: {
+            ...prev[phase],
+            state: 'completed',
+            restoredCount: data.restoredCount as number,
+            errorCount: data.errorCount as number,
+          },
+        }));
+      } else if (type === 'job_failed') {
+        const error = data.error as { code: string; phase: string; message: string };
+        const failedPhase = error.phase;
+        if (!isRestorePhase(failedPhase)) return;
+        setJobState('failed');
+        setPhases((prev) => {
+          const next = { ...prev };
+          next[failedPhase] = {
+            ...next[failedPhase],
+            state: 'failed',
+            errorMessage: error.message,
+            errorCode: error.code,
+          };
+          let past = false;
+          for (const p of RESTORE_PHASES) {
+            if (p === failedPhase) { past = true; continue; }
+            if (past && next[p].state === 'pending') next[p] = { ...next[p], state: 'blocked' };
+          }
+          return next;
+        });
+      } else if (type === 'job_completed') {
+        const errors = data.errors as number;
+        setJobState(errors > 0 ? 'completed_with_errors' : 'completed');
+        setCompletedInfo({ totalErrors: errors, totalRestored: data.restoredCount as number });
+      }
+    });
+
+    es.addEventListener('error', () => {
+      if (es.readyState === EventSource.CLOSED) {
+        setJobState((s) => (s === 'connecting' ? 'failed' : s));
+      }
+    });
+
+    return () => { es.close(); };
+  }, [jobId]);
+
+  const isTerminal =
+    jobState === 'completed' || jobState === 'completed_with_errors' || jobState === 'failed';
+
+  const failedEntry = Object.entries(phases).find(([, info]) => info.state === 'failed') as
+    | [RestorePhaseType, RunPhaseInfo]
+    | undefined;
+  const failedLabel = failedEntry ? PHASE_LABELS[failedEntry[0]] : null;
+  const failedErrorCode = failedEntry ? failedEntry[1].errorCode : null;
+
+  return (
+    <div className="rw__run">
+      <div>
+        <h3 className="rw__body-title">Restore in progress</h3>
+        <p className="rw__body-desc">
+          Restoring objects in dependency order. Do not close this window until the job completes.
+        </p>
+      </div>
+
+      {/* Stalled banner — yellow, clears on next heartbeat */}
+      {jobState === 'stalled' && (
+        <div className="rw__run-banner rw__run-banner--stalled" role="alert" data-testid="stalled-banner">
+          <span aria-hidden="true">⚠</span>
+          Job appears stalled — no progress in &gt;20s
+        </div>
+      )}
+
+      {/* Completion banners */}
+      {jobState === 'completed' && (
+        <div className="rw__run-banner rw__run-banner--success" role="status">
+          <span aria-hidden="true">✓</span>
+          {completedInfo
+            ? `Completed successfully — ${completedInfo.totalRestored.toLocaleString()} item${completedInfo.totalRestored === 1 ? '' : 's'} restored.`
+            : 'Completed successfully.'}
+        </div>
+      )}
+      {jobState === 'completed_with_errors' && (
+        <div className="rw__run-banner rw__run-banner--warn" role="status" data-testid="completed-with-errors">
+          <span aria-hidden="true">⚠</span>
+          {completedInfo
+            ? `Completed with ${completedInfo.totalErrors.toLocaleString()} error${completedInfo.totalErrors === 1 ? '' : 's'}`
+            : 'Completed with errors.'}
+        </div>
+      )}
+
+      {/* Failure toast — shows failing phase name and error code */}
+      {jobState === 'failed' && failedLabel && (
+        <div className="rw__run-banner rw__run-banner--error" role="alert" data-testid="failure-toast">
+          <span aria-hidden="true">✕</span>
+          <span>
+            Restore failed at <strong>{failedLabel}</strong> phase.{' '}
+            <code>{failedErrorCode ?? 'dependency_phase_failed'}</code>
+          </span>
+        </div>
+      )}
+
+      {/* Heartbeat freshness indicator */}
+      <div className="rw__run-heartbeat" aria-live="polite" data-testid="heartbeat-indicator">
+        {isTerminal
+          ? null
+          : jobState === 'connecting'
+          ? 'Connecting to job stream…'
+          : `Last heartbeat: ${secondsAgo}s ago`}
+      </div>
+
+      {/* Phase list — vertical, updates in dependency order */}
+      <ol className="rw__run-phases" aria-label="Restore phases">
+        {RESTORE_PHASES.map((phase) => (
+          <RunPhaseRow key={phase} phase={phase} info={phases[phase]} />
+        ))}
+      </ol>
+
+      <div className="rw__run-jobid">
+        Job ID: <code>{jobId}</code>
+      </div>
+    </div>
+  );
+}
+
+// ── RunPhaseRow ──────────────────────────────────────────────────────────────
+
+function RunPhaseRow({ phase, info }: { phase: RestorePhaseType; info: RunPhaseInfo }) {
+  const { state, restoredCount, errorCount, processed, total, errorMessage, errorCode } = info;
+
+  let icon: React.ReactNode;
+  if (state === 'running') icon = <span className="rw__run-spinner" aria-label="Running" />;
+  else if (state === 'completed') icon = '✓';
+  else if (state === 'failed') icon = '✕';
+  else icon = '·';
+
+  const progressPercent =
+    state === 'running' && total !== null && total > 0
+      ? Math.round((processed / total) * 100)
+      : null;
+
+  let meta: React.ReactNode = null;
+  if (state === 'running' && total !== null) {
+    meta = `${processed.toLocaleString()} / ${total.toLocaleString()}`;
+  } else if (state === 'completed') {
+    const parts: string[] = [];
+    if (restoredCount > 0) parts.push(`${restoredCount.toLocaleString()} restored`);
+    if (errorCount > 0) parts.push(`${errorCount.toLocaleString()} error${errorCount === 1 ? '' : 's'}`);
+    if (parts.length > 0) meta = parts.join(' · ');
+  } else if (state === 'blocked') {
+    meta = 'Blocked — a prior phase failed';
+  }
+
+  return (
+    <li
+      className={`rw__run-phase rw__run-phase--${state}`}
+      aria-label={`${PHASE_LABELS[phase]}: ${state}`}
+      data-testid={`phase-row-${phase}`}
+    >
+      <span className={`rw__run-phase-icon rw__run-phase-icon--${state}`} aria-hidden="true">
+        {icon}
+      </span>
+      <div className="rw__run-phase-content">
+        <span className="rw__run-phase-label">{PHASE_LABELS[phase]}</span>
+        {meta && <span className="rw__run-phase-meta">{meta}</span>}
+        {state === 'failed' && errorMessage && (
+          <span className="rw__run-phase-error" role="alert">
+            <code>{errorCode ?? 'dependency_phase_failed'}</code> — {errorMessage}
+          </span>
+        )}
+        {progressPercent !== null && (
+          <div className="rw__run-progress-wrap" aria-hidden="true">
+            <div className="rw__run-progress-bar" style={{ width: `${progressPercent}%` }} />
+          </div>
+        )}
+      </div>
+    </li>
+  );
+}
+
 // ── RestoreWizard ────────────────────────────────────────────────────────────
 
 export function RestoreWizard() {
-  const navigate = useNavigate();
-
-  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
+  const [step, setStep] = useState<1 | 2 | 3 | 4 | 5>(1);
+  const [jobId, setJobId] = useState<string | null>(null);
 
   // Connection data
   const [connections, setConnections] = useState<ConnectionSummary[]>([]);
@@ -706,7 +1007,8 @@ export function RestoreWizard() {
 
       if (res.status === 201) {
         const data = (await res.json()) as { jobId: string };
-        navigate(`/restore-jobs/${data.jobId}`);
+        setJobId(data.jobId);
+        setStep(5);
         return;
       }
 
@@ -737,7 +1039,7 @@ export function RestoreWizard() {
       {/* Step indicator */}
       <ol className="rw__steps" aria-label="Wizard steps">
         {STEPS.map((s, i) => {
-          const num = (i + 1) as 1 | 2 | 3 | 4;
+          const num = (i + 1) as 1 | 2 | 3 | 4 | 5;
           const isActive = step === num;
           const isDone = step > num;
           return (
@@ -799,12 +1101,15 @@ export function RestoreWizard() {
             submitting={submitting}
           />
         )}
+        {step === 5 && jobId && (
+          <Step5 jobId={jobId} />
+        )}
       </div>
 
       {/* Footer navigation */}
       <div className="rw__footer">
         <div className="rw__footer-left">
-          {step > 1 && (
+          {step > 1 && step < 5 && (
             <button
               type="button"
               className="rw__btn-back"
@@ -827,7 +1132,7 @@ export function RestoreWizard() {
           >
             Next →
           </button>
-        ) : (
+        ) : step === 4 ? (
           <button
             type="button"
             className="rw__btn-confirm"
@@ -837,6 +1142,10 @@ export function RestoreWizard() {
           >
             {submitting ? 'Starting…' : 'Start restore'}
           </button>
+        ) : (
+          <a className="rw__btn-back" href="/restore" aria-label="Start another restore">
+            ← Start another restore
+          </a>
         )}
       </div>
     </div>

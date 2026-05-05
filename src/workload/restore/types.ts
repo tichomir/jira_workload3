@@ -198,6 +198,22 @@ export interface PhaseProgressEvent extends RestoreSseEventBase {
 }
 
 /**
+ * Periodic heartbeat emitted every ≤10 s while a restore phase is executing.
+ *
+ * Signals to the UI that the restore job is alive. A gap of >20 s between
+ * heartbeat events surfaces a 'stalled' alert (T5 §6.2).
+ *
+ * Emitted by HeartbeatEmitter from inside RestoreOrchestrator.runRestore().
+ * Does NOT replace phase_started / phase_completed boundary events.
+ * Source: T5 §6.2.
+ */
+export interface HeartbeatEvent extends RestoreSseEventBase {
+  type: 'heartbeat';
+  /** The restore phase that is currently executing when this heartbeat fires. */
+  currentPhase: RestorePhase;
+}
+
+/**
  * Emitted when a phase fails and execution halts immediately.
  *
  * error.code is always 'dependency_phase_failed'.
@@ -279,6 +295,7 @@ export type RestoreSseEvent =
   | PhaseStartedEvent
   | PhaseCompletedEvent
   | PhaseProgressEvent
+  | HeartbeatEvent
   | JobFailedEvent
   | JobCompletedEvent
   | ConflictPauseEvent

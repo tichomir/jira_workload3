@@ -5,6 +5,15 @@ import { getDb } from '../db/database.js';
 import type { ConflictMode, RestoreDestinationType, RestoreSseEvent, IRestoreOrchestrator } from '../workload/restore/types.js';
 import { subscribe, publish } from '../workload/restore/eventBus.js';
 import { RestoreOrchestrator } from '../workload/restore/RestoreOrchestrator.js';
+import { STALLED_THRESHOLD_MS } from '../platform/restore/sseEvents.js';
+
+interface StalledSsePayload {
+  type: 'stalled';
+  jobId: string;
+  ts: string;
+  lastPhase: string | null;
+  secondsSinceLastEvent: number;
+}
 
 const VALID_CONFLICT_MODES: readonly ConflictMode[] = ['override', 'skip', 'ask'];
 const VALID_DESTINATIONS: readonly RestoreDestinationType[] = ['original', 'alternate', 'export'];
@@ -189,18 +198,48 @@ export function handleGetJobEvents(req: Request, res: Response): void {
 
   let done = false;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let stalledTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastEventTs = Date.now();
+  let lastPhase: string | null = null;
   let unsubscribeFn: (() => void) | null = null;
 
   function cleanup(): void {
     if (done) return;
     done = true;
     if (heartbeatTimer !== null) clearInterval(heartbeatTimer);
+    if (stalledTimer !== null) clearTimeout(stalledTimer);
     unsubscribeFn?.();
+  }
+
+  function resetStalledWatchdog(): void {
+    if (stalledTimer !== null) clearTimeout(stalledTimer);
+    if (done) return;
+    stalledTimer = setTimeout(() => {
+      if (done) return;
+      const now = Date.now();
+      const secondsSinceLastEvent = Math.floor((now - lastEventTs) / 1_000);
+      const payload: StalledSsePayload = {
+        type: 'stalled',
+        jobId,
+        ts: new Date(now).toISOString(),
+        lastPhase,
+        secondsSinceLastEvent,
+      };
+      res.write(`event: stalled\ndata: ${JSON.stringify(payload)}\n\n`);
+      // Reset baseline and reschedule so we keep monitoring without spamming
+      lastEventTs = Date.now();
+      resetStalledWatchdog();
+    }, STALLED_THRESHOLD_MS);
   }
 
   function onEvent(event: RestoreSseEvent): void {
     if (done) return;
-    res.write(`data: ${JSON.stringify(event)}\n\n`);
+    if (event.type === 'phase_started') {
+      lastPhase = (event as { type: 'phase_started'; phase: string }).phase;
+    }
+    lastEventTs = Date.now();
+    resetStalledWatchdog();
+    res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
     if (event.type === 'job_completed' || event.type === 'job_failed') {
       cleanup();
       res.end();
@@ -212,6 +251,7 @@ export function handleGetJobEvents(req: Request, res: Response): void {
   unsubscribeFn = subscribe(jobId, onEvent);
 
   if (!done) {
+    resetStalledWatchdog();
     heartbeatTimer = setInterval(() => {
       if (!done) res.write(': heartbeat\n\n');
     }, 9_000);
