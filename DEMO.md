@@ -2,9 +2,22 @@
 
 ## Prerequisites
 
-- API server running on `http://localhost:4000` (see [INSTALL.md](INSTALL.md))
-- Atlassian OAuth app configured with `ATLASSIAN_CLIENT_ID`, `ATLASSIAN_CLIENT_SECRET`, and `OAUTH_REDIRECT_URI` set in `.env` (copy `.env.example` to `.env` and fill in values — see [INSTALL.md](INSTALL.md))
-- Caddy (or any HTTPS proxy) terminating TLS at `https://localhost` and forwarding `/api/*` to port 4000
+Configure and start the podman-compose stack before running any step below:
+
+```bash
+cp .env.example .env   # fill in ATLASSIAN_CLIENT_ID, ATLASSIAN_CLIENT_SECRET, OAUTH_REDIRECT_URI
+./start.sh             # builds image, starts API server + Caddy TLS sidecar, waits for /health
+```
+
+Verify the server is healthy:
+
+```bash
+curl -sf http://localhost:4000/health
+```
+
+See [INSTALL.md](INSTALL.md) for full environment setup and OAuth configuration details.
+
+> **Alternative (no container):** `npm run server` in one terminal + `caddy run` in another. See [INSTALL.md](INSTALL.md) §4.
 
 ---
 
@@ -175,7 +188,7 @@ When `jsmDeferredCount > 0`, retrieve the manifest to inspect which
 ```bash
 BACKUP_POINT_ID=<backupPointId-from-discover-response>
 
-sqlite3 data/jira_workload.db \
+podman-compose exec app sqlite3 /app/data/jira_workload.db \
   "SELECT manifestJson FROM backup_manifests WHERE id = '${BACKUP_POINT_ID}';" \
   | python3 -m json.tool
 ```
@@ -280,7 +293,7 @@ the `coverageInvariant` block of the manifest:
 
 ```bash
 BACKUP_POINT_ID=<backupPointId-from-discover-response>
-sqlite3 data/jira_workload.db \
+podman-compose exec app sqlite3 /app/data/jira_workload.db \
   "SELECT json_extract(manifestJson, '$.coverageInvariant') FROM backup_manifests WHERE id = '${BACKUP_POINT_ID}';"
 ```
 
@@ -516,7 +529,7 @@ On the first-ever backup run every project receives `changeBadge: "added"`.
 ```bash
 BACKUP_POINT_ID=<backupPointId-from-discover-response>
 
-sqlite3 data/jira_workload.db \
+podman-compose exec app sqlite3 /app/data/jira_workload.db \
   "SELECT json_extract(value, '$.projectKey'),
           json_extract(value, '$.changeBadge')
    FROM backup_manifests,
@@ -527,7 +540,7 @@ sqlite3 data/jira_workload.db \
 ### Read the aggregate diff summary
 
 ```bash
-sqlite3 data/jira_workload.db \
+podman-compose exec app sqlite3 /app/data/jira_workload.db \
   "SELECT json_extract(manifestJson, '$.diffSummary')
    FROM backup_manifests
    WHERE id = '${BACKUP_POINT_ID}';"
@@ -1083,7 +1096,25 @@ Scan log output per file:
 ## Smoke probes (machine-readable)
 
 Each block below is a self-contained POSIX shell script. Run them in order
-against a running local stub (`npm run server`). All three must exit 0.
+against a running API server. All probes must exit 0.
+
+Probes that seed data directly into SQLite (Probes 7 and 11) use `python3`
+with the `DB_PATH` environment variable (default: `data/jira_workload.db`).
+All other steps call the HTTP API on `http://localhost:4000`. Probes that run
+`npx vitest` require Node.js and `npm install` on the host (see
+[INSTALL.md](INSTALL.md) §1).
+
+Run via podman-compose:
+```bash
+./start.sh            # builds image, starts stack, waits for /health
+bash scripts/run-smoke-probes.sh
+```
+
+Run via plain npm (no container):
+```bash
+npm run server &      # API server on port 4000
+bash scripts/run-smoke-probes.sh
+```
 
 ### Probe 1 — connect-jira-site (OAuth path)
 
@@ -1323,7 +1354,7 @@ echo "All field-context + issue-enumeration smoke checks passed."
 # Sprint 3 smoke probe — policies rpoHours, GET /api/jobs/:id,
 # downloadIssueAttachments SHA-256 unit tests, computeManifestDiff changeBadge
 # unit tests.
-# Requires: running API server (npm run server) for steps 1–4.
+# Requires: podman-compose stack running (./start.sh) for HTTP steps 1–4.
 set -euo pipefail
 
 PORT=${PORT:-4000}
@@ -1398,7 +1429,7 @@ echo "All sprint3-deliverables smoke checks passed."
 #   GET /api/inventory/Issue?attachmentFilename=.. (attachment filename search)
 #   GET /api/inventory/Issue                       (pagination + traceability)
 # Seeds a backup manifest and two Issue items with status + attachments data
-# via Python sqlite3 — no live Jira credentials required.
+# via python3 sqlite3 — no live Jira credentials required.
 # Requires: running API server (npm run server).
 set -euo pipefail
 
@@ -1458,7 +1489,7 @@ db.execute(
 db.executemany(
     '''INSERT INTO backup_point_items
        (connectionId, backupPointId, objectType, itemId, displayName, summary, changeBadge, capturedAt, status, attachments)
-       VALUES (?,?,'Issue',?,?,?,'added',?,?,?)''',
+       VALUES (?,?,\"Issue\",?,?,?,\"added\",?,?,?)''',
     [(conn_id, bp_id, 'SMOKE-1', 'SMOKE-1', 'First smoke issue', now, 'Done', '[\"screenshot.png\"]'),
      (conn_id, bp_id, 'SMOKE-2', 'SMOKE-2', 'Second smoke issue', now, 'In Progress', None)])
 db.commit()
@@ -1579,7 +1610,7 @@ echo "All browse-inventory smoke checks passed."
 #   board → sprint → issue → comment-attachment-subtask-issuelink
 #
 # Terminal SSE event must be job_completed (not job_failed).
-# Requires: running API server (npm run server).
+# Requires: podman-compose stack running (./start.sh).
 set -euo pipefail
 
 PORT=${PORT:-4000}
@@ -1685,7 +1716,7 @@ echo "All restore-protected-objects smoke checks passed."
 #   GET /api/restore-jobs/trash-check  — TRASH-prefixed key → trashedProjectKeys populated
 #   Unit tests: boardScopeRecheck, trashDetectionGuard, RestoreOrchestrator (guard chain)
 #
-# Requires: running API server (npm run server) for HTTP steps.
+# Requires: podman-compose stack running (./start.sh) for HTTP steps.
 set -euo pipefail
 
 PORT=${PORT:-4000}
@@ -1800,7 +1831,7 @@ echo "All restore-sprint3-heartbeat smoke checks passed."
 # Verifies the SDI teaser endpoint:
 #   GET /api/backup-points/:id/sdi-teaser
 #
-# Seeds a backup_point_sdi_summary row via sqlite3 with GDPR=active, PCI_DSS=inactive,
+# Seeds a backup_point_sdi_summary row via python3 sqlite3 with GDPR=active, PCI_DSS=inactive,
 # then asserts the endpoint returns the expected regulations array.
 # Requires: running API server (npm run server).
 set -euo pipefail

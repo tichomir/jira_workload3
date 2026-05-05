@@ -880,3 +880,30 @@ This sprint typically decomposes into ~5-7 tasks:
 - ✅ Verify doc grounding and DoD end-to-end on a clean checkout — Qa Engineer (⚡ Quick, 2 SP)
 
 ---
+### Sprint Maintenance — Restore podman-compose runtime | 2026-05-05 | ⏳ in progress | 19 SP est.
+**Goal:** #1: Missing podman-compose
+
+Documentation states that I can run this with podman, but in reality, we are missing the podman-compose for that. 
+We need to resolve this as it basically the product doesn't work.
+
+_Sprint started. Role checkpoints below will update as work completes._
+
+---
+### Sprint Maintenance — Restore podman-compose runtime | 2026-05-05 | ✅ done | 22 SP
+**Goal:** #1: Missing podman-compose
+
+Documentation states that I can run this with podman, but in reality, we are missing the podman-compose for that. 
+We need to resolve this as it basically the product doesn't work.
+
+**Delivered:**
+- ✅ Define container topology and service contract for podman-compose — Software Architect (⚡ Quick, 2 SP)
+- ✅ Author podman-compose.yml at repo root — Devops Engineer (◈ Standard, 3 SP)
+- ✅ Create .env.example with all required env vars — Devops Engineer (⚡ Quick, 2 SP)
+- ✅ Add start.sh / start.bat / start.ps1 wrappers around podman-compose — Devops Engineer (⚡ Quick, 2 SP)
+- ✅ Update INSTALL.md and CHANGELOG.md for podman-compose runtime — Devops Engineer (⚡ Quick, 2 SP)
+- ✅ Update DEMO.md to run end-to-end via podman-compose — Frontend Developer (⚡ Quick, 2 SP)
+- ✅ End-to-end smoke test on a clean checkout via podman-compose — Qa Engineer (◈ Standard, 3 SP)
+- ✅ Doc grounding verification across all canonical docs — Qa Engineer (◈ Standard, 3 SP)
+- ✅ Fix: Complete end-to-end smoke test on clean checkout via podman-compose — Qa Engineer (◈ Standard, 3 SP)
+
+---

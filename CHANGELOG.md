@@ -4,6 +4,52 @@ All notable changes are documented here by sprint.
 
 ---
 
+## [Sprint Maintenance] — 2026-05-05 — Restore podman-compose runtime
+
+Resolves the P0 "missing podman-compose" issue where documentation referenced a
+container-based runtime that was not present in the repository.
+
+### Added
+
+#### `podman-compose.yml` — project root
+- Compose v3.9 file starting two services:
+  - `app` — Node 20 Alpine image built from `Dockerfile`; binds port `4000`; named
+    volumes `sqlite_data` and `attachment_data` keep database and attachment files
+    outside the container layer; Docker healthcheck polls `GET /health`.
+  - `caddy` — `caddy:2-alpine` TLS sidecar reading `Caddyfile.compose`; depends on
+    `app` reaching healthy state before starting; exposes ports 80 and 443.
+- Standard Compose v3.9 syntax — fully compatible with `docker compose -f podman-compose.yml up`.
+
+#### `Caddyfile.compose` — project root
+- Caddy configuration for the compose stack: reverse-proxies `/api/*` to `http://app:4000`
+  and all other paths to the Vite dev server when running inside the compose network.
+
+#### `start.sh` — project root
+- Bash wrapper for the primary local-development launch path.
+- Copies `.env.example` → `.env` automatically if `.env` is absent, with a warning.
+- Runs `podman-compose up -d`, then polls `http://localhost:4000/health` every 2 s
+  until the server responds or a 60-second timeout elapses.
+- Prints the service URL on success; exits non-zero on timeout.
+
+#### `.env.example` — project root
+- Documents all required and optional environment variables:
+  `ATLASSIAN_CLIENT_ID`, `ATLASSIAN_CLIENT_SECRET`, `OAUTH_REDIRECT_URI`, `PORT` (default `4000`),
+  `DB_PATH` (optional), `DCC_ATTACHMENT_DIR` (optional).
+
+### Documentation
+
+- `INSTALL.md §4` — restructured to make `podman-compose` + `./start.sh` the **primary**
+  local-runtime path; npm two-terminal approach retained as an alternative.
+- `INSTALL.md §4` — Docker-compatibility note added: `docker compose -f podman-compose.yml up`
+  works without modification.
+- All `.env`, `.env.example`, `podman-compose.yml`, `start.sh`, port `4000`, and `/health`
+  references in `INSTALL.md` resolve to files that exist on disk.
+
+### No new environment variables
+`PORT` defaults to `4000` (unchanged from Sprint 18). No new keys introduced.
+
+---
+
 ## [Sprint 18] — 2026-05-05 — Maintenance: Build & Run Validation
 
 This sprint repaired the project to a fully green state: build succeeds, server starts on port 4000, test suite passes, and canonical docs are consistent.

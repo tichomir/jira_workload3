@@ -68,7 +68,36 @@ npx tsx src/db/database.ts
 
 ## 4. Start the services
 
-### Option A — two terminals (plain npm)
+### Primary path — podman-compose + start.sh
+
+A `podman-compose.yml` is included at the project root. It starts the API server
+(`app` service, Node 20) and a Caddy TLS sidecar (`caddy` service) together.
+Named volumes keep SQLite and attachment data outside the container layer.
+
+> **Docker compatibility:** `docker compose -f podman-compose.yml up` works without
+> modification — `podman-compose.yml` uses standard Compose v3.9 syntax.
+
+```bash
+cp .env.example .env   # copy and fill in your OAuth credentials
+./start.sh             # builds image, starts stack, waits for /health
+```
+
+`start.sh` runs `podman-compose up -d` and polls `http://localhost:4000/health`
+until the server responds, then prints the URL. Additional compose commands:
+
+```bash
+podman-compose logs -f app   # follow API server logs
+podman-compose down          # stop and remove containers (volumes are retained)
+```
+
+Caddy provisions a locally-trusted TLS certificate automatically. Set
+`OAUTH_REDIRECT_URI=https://localhost/api/oauth/callback` in `.env` and register
+the same URI in the Atlassian developer console.
+
+The Vite dev server is not included in the compose stack — run `npm run dev` in a
+separate terminal if you need the UI hot-reload path.
+
+### Alternative — two terminals (plain npm, no container)
 
 Terminal 1: API server
 
@@ -83,22 +112,6 @@ npm run dev
 ```
 
 Navigate to `https://localhost` (if using Caddy) or `http://localhost:5173` (plain Vite).
-
-### Option B — podman-compose (API + Caddy)
-
-If you have `podman-compose` (or `docker compose`) available you can start the API
-server and a Caddy sidecar with a single command. Create a compose file
-containing at minimum an `api` service running `npm run server` and a `caddy`
-service using the official Caddy image. Then:
-
-```bash
-podman-compose up -d      # start in background
-podman-compose logs -f    # follow logs
-podman-compose down       # stop
-```
-
-The Vite dev server is not included in the compose stack — run `npm run dev` in a
-separate terminal as usual.
 
 ## 5. Verify the server is running
 

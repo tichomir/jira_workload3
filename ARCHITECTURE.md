@@ -3406,3 +3406,169 @@ backoff spec:
 - **No global state.** The retry loop is scoped to a single `_request` invocation.
   Concurrent requests each maintain their own `attempt` counter; there is no
   shared backoff state across concurrent in-flight calls.
+
+---
+
+## Container Topology
+
+### Overview
+
+The compose stack runs the API server and a Caddy TLS-termination sidecar.
+The Vite dev server is **not** part of the compose stack — run `npm run dev`
+in a separate terminal as documented in INSTALL.md §4 Option A.
+
+All services communicate on a private bridge network (`jira-net`). Only Caddy
+is exposed on the host. The `api` service is unreachable from the host directly;
+all traffic reaches it via Caddy's reverse proxy.
+
+No service in the compose stack makes outbound calls to Atlassian APIs from
+within the compose layer. Atlassian REST calls are made at runtime by the
+`api` service on behalf of the operator — the compose topology is
+infrastructure-only and does not call vendor APIs.
+
+---
+
+### Services
+
+#### `api` — Express API server
+
+| Property | Value |
+|----------|-------|
+| Image | `node:20-alpine` |
+| Build context | Project root (`npm install && npm run build`, then `npm run server`) |
+| Command | `npm run server` |
+| Internal port | `4000` (not exposed on host; Caddy proxies to it) |
+| Volume mounts | `jira-data:/app/data` |
+| Networks | `jira-net` |
+| Healthcheck | `curl -sf http://localhost:4000/health` (interval 10 s, timeout 5 s, retries 3) |
+| Startup order | Starts first; `caddy` depends on this service being healthy |
+
+**Environment variables (all sourced from `.env` / `.env.example`):**
+
+| Variable | Required | Value in container | Description |
+|----------|----------|--------------------|-------------|
+| `ATLASSIAN_CLIENT_ID` | Yes | `${ATLASSIAN_CLIENT_ID}` | OAuth app Client ID |
+| `ATLASSIAN_CLIENT_SECRET` | Yes | `${ATLASSIAN_CLIENT_SECRET}` | OAuth app Client Secret |
+| `OAUTH_REDIRECT_URI` | Yes | `https://localhost/api/oauth/callback` | Must match the URI registered in the Atlassian developer console |
+| `PORT` | No | `4000` | API server listen port; must stay `4000` to match Caddy upstream |
+| `DCC_ATTACHMENT_DIR` | No | `/app/data/attachments` | Attachment binary storage path inside the container; points into the `jira-data` volume |
+
+---
+
+#### `caddy` — TLS terminator and reverse proxy
+
+| Property | Value |
+|----------|-------|
+| Image | `caddy:2-alpine` |
+| Host ports | `443:443` (HTTPS), `80:80` (HTTP → HTTPS redirect) |
+| Volume mounts | See table below |
+| Networks | `jira-net` |
+| Healthcheck | `curl -sfk https://localhost/health` (proxied to `api`; interval 15 s, timeout 5 s, retries 3) |
+| Startup order | `depends_on: api` (waits for `api` healthcheck to pass) |
+| Environment variables | None |
+
+**Caddy volume mounts:**
+
+| Host path / named volume | Container path | Mode | Purpose |
+|--------------------------|---------------|------|---------|
+| `./Caddyfile.container` | `/etc/caddy/Caddyfile` | `ro` | Container-specific Caddyfile (see note below) |
+| `caddy-data` | `/data` | rw | Caddy TLS certificate store (auto-provisioned, locally trusted) |
+| `caddy-config` | `/config` | rw | Caddy configuration cache |
+
+> **Caddyfile note:** The project root `Caddyfile` uses `localhost:4000` as the
+> upstream, which refers to the Caddy container itself in a container network.
+> The container stack requires a separate `Caddyfile.container` where the
+> `api/*` upstream is `api:4000` (the Docker/Podman service name resolves to
+> the `api` container). The `/* ` static or Vite upstream is omitted in the
+> container stack — the Vite dev server runs outside compose.
+>
+> Minimal `Caddyfile.container` for the compose stack:
+>
+> ```
+> localhost {
+>     reverse_proxy /api/* api:4000
+> }
+> ```
+
+---
+
+### Named Volumes
+
+| Volume | Purpose | Lifetime |
+|--------|---------|---------|
+| `jira-data` | SQLite database (`data/jira_workload.db`) and attachment binaries (`data/attachments/`) | Persistent — survives `podman-compose down`; deleted only by `podman-compose down -v` |
+| `caddy-data` | Caddy auto-provisioned TLS certificates | Persistent — preserves locally-trusted cert across restarts |
+| `caddy-config` | Caddy runtime config cache | Persistent (may be ephemeral without data loss) |
+
+---
+
+### Network and Port Map
+
+```
+Host machine
+  :80  ──────► caddy:80  (HTTP → HTTPS redirect)
+  :443 ──────► caddy:443 (HTTPS, locally-trusted TLS)
+                   │
+                   │  /api/*  →  api:4000  (Express)
+                   │  /*      →  (not proxied in container stack — dev server runs on host)
+                   │
+              [jira-net bridge]
+                   │
+              api:4000  (Express; not reachable from host directly)
+```
+
+The `api` service is unreachable from the host on any port. All client requests
+arrive at Caddy on port 443 and are forwarded to `api:4000` over the private
+`jira-net` bridge.
+
+---
+
+### Dependency Order and Startup Sequence
+
+```
+1. api        — starts first; waits for Node.js process to bind port 4000
+                and /health to return 200
+2. caddy      — starts after api healthcheck passes; binds host ports 80 + 443
+```
+
+---
+
+### Environment Variable Surface (`.env` → containers)
+
+The compose file reads `.env` from the project root and injects only the
+variables listed below. No other host environment variables are forwarded.
+
+| `.env` key | Injected into | Notes |
+|------------|--------------|-------|
+| `ATLASSIAN_CLIENT_ID` | `api` | Required for OAuth 3LO |
+| `ATLASSIAN_CLIENT_SECRET` | `api` | Required for OAuth 3LO |
+| `OAUTH_REDIRECT_URI` | `api` | Must be `https://localhost/api/oauth/callback` |
+| `PORT` | `api` | Defaults to `4000`; do not override in the compose stack |
+| `DCC_ATTACHMENT_DIR` | `api` | Defaults to `/app/data/attachments` in the container |
+
+**`ATLASSIAN_CLIENT_ID` and `ATLASSIAN_CLIENT_SECRET` are never forwarded to
+the `caddy` service.** Caddy is a pure network proxy with no knowledge of
+Atlassian credentials.
+
+---
+
+### Design Constraints
+
+- **Port 4000 is fixed.** The `api` service listens on `4000` inside the
+  container. Caddy proxies to `api:4000`. Changing this port requires updating
+  both the compose file and the Caddy upstream.
+- **No vendor API calls from the infrastructure layer.** Caddy and the volume
+  mounts are infrastructure-only. Outbound Atlassian REST calls are made
+  by the `api` container process at request time, not at compose startup.
+- **OAuth HTTPS requirement satisfied by Caddy.** Atlassian's OAuth 2.0 (3LO)
+  requires the redirect URI to be HTTPS. Caddy provisions a locally-trusted
+  certificate via its internal CA, enabling `https://localhost/api/oauth/callback`
+  without a custom CA setup.
+- **`jira-data` volume must not be shared with the `caddy` service.** The SQLite
+  database and attachment binaries are mounted exclusively into `api`. Caddy has
+  no access to application data.
+- **Vite dev server runs on the host, not in compose.** The compose stack covers
+  the API server and TLS termination only. Operators run `npm run dev` in a
+  separate terminal to serve the React frontend (typically at
+  `http://localhost:5173`), which proxies API calls through Caddy at
+  `https://localhost`.
